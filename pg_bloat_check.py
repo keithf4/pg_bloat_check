@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import argparse, psycopg2, subprocess, sys
 from psycopg2 import extras
 
@@ -22,16 +24,13 @@ args_mail = parser.add_argument_group(title="Email Report options")
 args_mail.add_argument('-x', '--mailx', default="mailx", help="Full path to mailx binary if not in default path.")
 args_mail.add_argument('-r', '--recipients', help="Comma separated list of recipients to send email report to.")
 args_mail.add_argument('-s', '--subject', help="Subject for the email report.")
-args_mail.add_argument('--send_zero', action="store_true", help="Send email even if nothing to report.")
+args_mail.add_argument('-z', '--send_zero', action="store_true", help="Send email even if nothing to report.")
 
 args_setup = parser.add_argument_group(title="Setup")
 args_setup.add_argument('--create_view', action="store_true", help="Create the required view that the bloat report uses. Places view in default search_path schema unless --view_schema is set.")
 args_setup.add_argument('--create_mat_view', action="store_true", help="Same as --create_view, but creates it as materialized view if your version of PostgreSQL supports it (9.3+). Be aware that this script does not refresh the materialized view automatically.")
 args = parser.parse_args()
 
-if args.create_view and args.create_mat_view:
-    print("Cannot set both --create_view and --create_mat_view at the same time")
-    sys.exit(2)
 
 def create_conn():
     conn = psycopg2.connect(args.connection)
@@ -252,5 +251,5 @@ if __name__ == "__main__":
         print(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['bloat_percent']) + "%) " + r['wastedsize'] + " wasted")
         counter += 1
 
-close_conn(conn)
+    close_conn(conn)
 
