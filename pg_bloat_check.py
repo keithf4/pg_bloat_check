@@ -1,30 +1,22 @@
 #!/usr/bin/env python
 
-import argparse, psycopg2, subprocess, sys
+import argparse, psycopg2, sys
 from psycopg2 import extras
 
 # Bloat queries are adapted from the check_bloat query found in bucardo's check_postgres tool http://bucardo.org/wiki/Check_postgres
 
-# TODO Set default subject to
-#   --subject          [%Y-%m-%d %H:%M:%S %z] Bloat report for __mode__ in __dbname__ at __host__:__port__
-
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes.")
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('--mode', '-m', choices=["tables", "indexes"], default="tables", help="""Provide bloat report for the following objects: tables, indexes. Note that the "tables" mode does not include any index bloat that may also exist in the table. Default is "tables".""")
-args_general.add_argument('-c','--connection', default="host=localhost", help="""Connection string for use by psycopg. Defaults to "host=localhost".""")
-#args_general.add_argument('-f', '--format', default="table", choices=["table", "simple", "dict"], help="Output formats. Table outputs a table format sutable for a console. Simple is a plaintext version suitable for any output (preferred setting for email). Dict is a python dictionary object, which may be useful if taking input into another python script or for something that reads JSON.")
+args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
+#args_general.add_argument('-f', '--format', default="table", choices=["table", "simple", "dict"], help="Output formats. Table outputs a table format sutable for a console. Simple is a plaintext version suitable for any output (preferred setting for email). Dict is a python dictionary object, which may be useful if taking input into another python script or something that needs a more structured format.")
 args_general.add_argument('-a', '--min_pages', type=int, default=1, help="Minimum number of pages an object must have to be included in the report. Default and minimum value is 1.")
 args_general.add_argument('-A', '--min_wasted_pages', type=int, default=1, help="Minimum number of wasted pages an object must have to be included in the report. Default and minimum value is 1.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default value is 0.1%%")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude. If set with -n, schemas will be excluded then included.")
 args_general.add_argument('--view_schema', help="Set the schema that the bloat report view is in if it's not in the default search_path. Note this option can also be set when running --create_view to set in which schema you want the view created.")
-
-args_mail = parser.add_argument_group(title="Email Report options")
-args_mail.add_argument('-x', '--mailx', default="mailx", help="Full path to mailx binary if not in default path.")
-args_mail.add_argument('-r', '--recipients', help="Comma separated list of recipients to send email report to.")
-args_mail.add_argument('-s', '--subject', help="Subject for the email report.")
-args_mail.add_argument('-z', '--send_zero', action="store_true", help="Send email even if nothing to report.")
+args_general.add_argument('-q', '--quiet', action="store_true", help="Stop all output to the console.")
 
 args_setup = parser.add_argument_group(title="Setup")
 args_setup.add_argument('--create_view', action="store_true", help="Create the required view that the bloat report uses. Places view in default search_path schema unless --view_schema is set.")
@@ -41,17 +33,8 @@ def close_conn(conn):
     conn.close()
 
 
-def create_exclude_schema_list():
-    if args.exclude_schema != None:
-        split_list = args.exclude_schema.split(",")
-    else:
-        split_list = []
-    split_list.append('pg_toast')
-    return split_list
-
-
-def create_include_schema_list():
-    split_list = args.schema.split(",")
+def create_list(csv_list):
+    split_list = csv_list.split(",")
     return split_list
 
 
@@ -169,7 +152,7 @@ def get_table_bloat(conn):
     return result
 
 
-def get_index_bloat(connf):
+def get_index_bloat(conn):
     sql = """
     SELECT
         current_database() AS db
@@ -208,6 +191,11 @@ def get_index_bloat(connf):
     return result
 
 
+def print_report(result_list):
+    for r in result_list:
+        print(r)
+
+
 if __name__ == "__main__":
     conn = create_conn()
 
@@ -221,12 +209,21 @@ if __name__ == "__main__":
     if args.mode == "indexes":
         result = get_index_bloat(conn)
 
-    if args.schema != None:
-        include_schema_list = create_include_schema_list()
+    close_conn(conn)
 
-    exclude_schema_list = create_exclude_schema_list()
+    if args.schema != None:
+        include_schema_list = create_list(args.schema)
+    else:
+        include_schema_list = []
+
+    if args.exclude_schema != None:
+        exclude_schema_list = create_list(args.exclude_schema)
+    else:
+        exclude_schema_list = []
+    exclude_schema_list.append('pg_toast')
 
     counter = 1
+    result_list = []
     for r in result:
         # Min check goes in order page, wasted_page, wasted_percentage to exclude things properly when options are combined
         if args.min_pages > 1:
@@ -248,8 +245,9 @@ if __name__ == "__main__":
 
 #        if args.format == "simple":
         justify_space = 100 - len(str(counter)+". "+r['schemaname']+"."+r['objectname']+"(%)"+str(r['bloat_percent'])+r['wastedsize']+" wasted")
-        print(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['bloat_percent']) + "%) " + r['wastedsize'] + " wasted")
+        result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['bloat_percent']) + "%) " + r['wastedsize'] + " wasted")
         counter += 1
 
-    close_conn(conn)
+    if not args.quiet:
+        print_report(result_list)
 
