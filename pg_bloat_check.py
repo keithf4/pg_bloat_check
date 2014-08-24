@@ -5,7 +5,7 @@ from psycopg2 import extras
 
 # Bloat queries are adapted from the check_bloat query found in bucardo's check_postgres tool http://bucardo.org/wiki/Check_postgres
 
-parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. Note that the query to check for bloat can be extremely expensive on very large databases or those with very large tables. The materialized view option in 9.3+ can help to mitigate getting bloat data back by storing it persistently instead of running a query every time the script is run (see --create_mat_view).")
+parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The materialized view option in 9.3+ can help to mitigate getting bloat data back by storing it persistently instead of running a query every time the script is run (see --create_mat_view).")
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes"], default="tables", help="""Provide bloat report for the following objects: tables, indexes. Note that the "tables" mode does not include any index bloat that may also exist in the table. Default is "tables".""")
 args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
