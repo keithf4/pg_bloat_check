@@ -9,6 +9,7 @@ parser = argparse.ArgumentParser(description="Provide a bloat report for Postgre
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes"], default="tables", help="""Provide bloat report for the following objects: tables, indexes. Note that the "tables" mode does not include any index bloat that may also exist in the table. Default is "tables".""")
 args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
+# TODO Add an object filter option (external, return deliminated file)
 # TODO see about a possible table format
 args_general.add_argument('-f', '--format', default="simple", choices=["simple", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Dict is a python dictionary object, which may be useful if taking input into another python script or something that needs a more structured format. Dict also provides more details about object pages. Default is simple.")
 args_general.add_argument('-a', '--min_pages', type=int, default=1, help="Minimum number of pages an object must have to be included in the report. Default and minimum value is 1.")
@@ -17,6 +18,7 @@ args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0
 args_general.add_argument('-z', '--min_wasted_size', type=long, default=1, help="Minimum size of wasted space in bytes. Default is zero.")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude. If set along with -n, schemas will be excluded then included.")
+args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a return deliminated list of objects to exclude from the report (tables and/or indexes). All objects must be schema qualified. Comments are allowed if the line is prepended with "#".""")
 
 args_setup = parser.add_argument_group(title="Setup")
 args_general.add_argument('--view_schema', help="Set the schema that the bloat report view is in if it's not in the default search_path. Note this option can also be set when running --create_view to set in which schema you want the view created.")
@@ -34,8 +36,20 @@ def close_conn(conn):
     conn.close()
 
 
-def create_list(csv_list):
-    split_list = csv_list.split(",")
+def create_list(list_type, list_items):
+    split_list = []
+    if list_type == "csv":
+        split_list = list_items.split(',')
+    elif list_type == "file":
+        try:
+            fh = open(list_items, 'r')
+            for line in fh:
+                if not line.strip().startswith('#'):
+                    split_list.append(line.strip())
+        except IOError as e:
+           print("Cannot access exclude file " + list_items + ": " + e.strerror)
+           sys.exit(2)
+
     return split_list
 
 
@@ -213,20 +227,25 @@ if __name__ == "__main__":
     close_conn(conn)
 
     if args.schema != None:
-        include_schema_list = create_list(args.schema)
+        include_schema_list = create_list('csv', args.schema)
     else:
         include_schema_list = []
 
     if args.exclude_schema != None:
-        exclude_schema_list = create_list(args.exclude_schema)
+        exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
         exclude_schema_list = []
     exclude_schema_list.append('pg_toast')
 
+    if args.exclude_object_file != None:
+        exclude_object_list = create_list('file', args.exclude_object_file)
+    else:
+        exclude_object_list = []
+
     counter = 1
     result_list = []
     for r in result:
-        # Min check goes in order page, wasted_page, wasted_percentage to exclude things properly when options are combined
+        # Min check goes in order page, wasted_page, wasted_size, wasted_percentage to exclude things properly when options are combined
         if args.min_pages > 1:
             if r['pages'] < args.min_pages:
                 continue
@@ -241,13 +260,6 @@ if __name__ == "__main__":
             print("--min_wasted_pages (-A) must be >= 1")
             sys.exit(2)
 
-        if args.min_wasted_percentage > 0.1:
-            if r['bloat_percent'] < args.min_wasted_percentage:
-                continue
-        elif args.min_wasted_percentage < 0.1:
-            print("--min_wasted_percentage (-p) must be >= 0.1%%")
-            sys.exit(2)
-
         if args.min_wasted_size > 1:
             if r['wastedbytes'] < args.min_wasted_size:
                 continue
@@ -255,12 +267,22 @@ if __name__ == "__main__":
             print("--min_wasted_size (-z) must be >= 1")
             sys.exit(2)
 
+        if args.min_wasted_percentage > 0.1:
+            if r['bloat_percent'] < args.min_wasted_percentage:
+                continue
+        elif args.min_wasted_percentage < 0.1:
+            print("--min_wasted_percentage (-p) must be >= 0.1%%")
+            sys.exit(2)
+
         if r['schemaname'] in exclude_schema_list:
             continue
 
-        if args.schema != None:
-            if r['schemaname'] not in include_schema_list:
-                continue
+        if ( len(include_schema_list) > 0 and r['schemaname'] not in include_schema_list ):
+            continue
+
+        if ( len(exclude_object_list) > 0 and
+                (r['schemaname'] + "." + r['objectname']) in exclude_object_list ):
+            continue
 
         if args.format == "simple":
             justify_space = 100 - len(str(counter)+". "+r['schemaname']+"."+r['objectname']+"(%)"+str(r['bloat_percent'])+r['wastedsize']+" wasted")
