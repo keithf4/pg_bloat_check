@@ -14,7 +14,7 @@ args_general.add_argument('-f', '--format', default="simple", choices=["simple",
 args_general.add_argument('-a', '--min_pages', type=int, default=1, help="Minimum number of pages an object must have to be included in the report. Default and minimum value is 1.")
 args_general.add_argument('-A', '--min_wasted_pages', type=int, default=1, help="Minimum number of wasted pages an object must have to be included in the report. Default and minimum value is 1.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default value is 0.1%% and given values cannot be any less than this.")
-args_general.add_argument('-z', '--min_wasted_size', type=long, default=0, help="Minimum size of wasted space in bytes. Default is zero.")
+args_general.add_argument('-z', '--min_wasted_size', type=long, default=1, help="Minimum size of wasted space in bytes. Default is zero.")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude. If set along with -n, schemas will be excluded then included.")
 
