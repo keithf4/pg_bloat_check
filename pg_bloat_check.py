@@ -144,12 +144,12 @@ def get_index_bloat(conn):
             , 1) AS bloat_percent
         , CASE 
             WHEN ipages < iotta THEN 0 
-            ELSE ipages::bigint - iotta 
-          END AS wastedpages::bigint
+            ELSE (ipages - iotta)::bigint
+          END AS wastedpages
         , CASE 
             WHEN ipages < iotta THEN 0 
-            ELSE bs*(ipages-iotta) 
-          END AS wastedbytes::bigint
+            ELSE bs*(ipages-iotta)::bigint
+          END AS wastedbytes
         , CASE 
             WHEN ipages < iotta THEN '0 bytes' 
             ELSE pg_size_pretty((bs*(ipages-iotta))::bigint)
@@ -182,7 +182,7 @@ def get_table_bloat(conn):
             END,1) AS bloat_percent 
         , CASE 
             WHEN relpages < otta THEN 0 
-            ELSE relpages::bigint - otta 
+            ELSE (relpages - otta)::bigint
           END AS wastedpages
         , CASE 
             WHEN relpages < otta THEN 0 
@@ -294,7 +294,7 @@ if __name__ == "__main__":
                                 , ('total_pages', int(r['pages']) )
                                 , ('bloat_percent', str(r['bloat_percent'])+"%" )
                                 , ('wasted_size', r['wastedsize'])
-                                , ('wasted_pages', r['wastedpages'])
+                                , ('wasted_pages', int(r['wastedpages']))
                                 ])
             result_list.append(result_dict)
 
