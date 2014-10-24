@@ -3,6 +3,8 @@
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
+version = "1.0.0"
+
 # Bloat queries are adapted from the check_bloat query found in bucardo's check_postgres tool http://bucardo.org/wiki/Check_postgres
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The materialized view option in 9.3+ can help to mitigate getting bloat data back by storing it persistently instead of running a query every time the script is run (see --create_mat_view).")
@@ -19,6 +21,7 @@ args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude. If set along with -n, schemas will be excluded then included.")
 args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a return deliminated list of objects to exclude from the report (tables and/or indexes). All objects must be schema qualified. Comments are allowed if the line is prepended with "#".""")
+args_general.add_argument('--version', action="store_true", help="Print version of this script.")
 
 args_setup = parser.add_argument_group(title="Setup")
 args_general.add_argument('--view_schema', help="Set the schema that the bloat report view is in if it's not in the default search_path. Note this option can also be set when running --create_view to set in which schema you want the view created.")
@@ -211,7 +214,15 @@ def print_report(result_list):
         print(r)
 
 
+def print_version():
+    print "Version: " + version
+
+
 if __name__ == "__main__":
+    if args.version:
+        print_version()
+        sys.exit(1)
+
     conn = create_conn()
 
     if args.create_view or args.create_mat_view:
@@ -298,7 +309,10 @@ if __name__ == "__main__":
                                 ])
             result_list.append(result_dict)
 
-    print_report(result_list)
+    if len(result_list) >= 1:
+        print_report(result_list)
+    else:
+        print("No bloat found for given parameters")
 
 """
 LICENSE AND COPYRIGHT
