@@ -3,7 +3,7 @@
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
-version = "1.0.0"
+version = "1.0.1"
 
 # Bloat queries are adapted from the check_bloat query found in bucardo's check_postgres tool http://bucardo.org/wiki/Check_postgres
 
@@ -127,6 +127,9 @@ def create_view(conn):
     LEFT JOIN pg_index i ON indrelid = cc.oid
     LEFT JOIN pg_class c2 ON c2.oid = i.indexrelid """
     cur = conn.cursor()
+    cur.execute(sql)
+    conn.commit()
+    sql = "COMMENT ON VIEW bloat_view IS 'View providing raw data for current table & index bloat status'"
     cur.execute(sql)
     conn.commit()
     cur.close()
