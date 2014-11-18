@@ -3,7 +3,7 @@
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
-version = "1.0.1"
+version = "1.0.2"
 
 # Bloat queries are adapted from the check_bloat query found in bucardo's check_postgres tool http://bucardo.org/wiki/Check_postgres
 
@@ -281,10 +281,10 @@ if __name__ == "__main__":
             print("--min_wasted_size (-z) must be >= 1")
             sys.exit(2)
 
-        if args.min_wasted_percentage > 0.1:
-            if r['bloat_percent'] < args.min_wasted_percentage:
+        if float(args.min_wasted_percentage) > float(0.1):
+            if float(r['bloat_percent']) < float(args.min_wasted_percentage):
                 continue
-        elif args.min_wasted_percentage < 0.1:
+        elif float(args.min_wasted_percentage) < float(0.1):
             print("--min_wasted_percentage (-p) must be >= 0.1%%")
             sys.exit(2)
 
