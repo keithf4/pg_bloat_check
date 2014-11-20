@@ -16,7 +16,7 @@ args_general.add_argument('-c','--connection', default="host=", help="""Connecti
 args_general.add_argument('-f', '--format', default="simple", choices=["simple", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Dict is a python dictionary object, which may be useful if taking input into another python script or something that needs a more structured format. Dict also provides more details about object pages. Default is simple.")
 args_general.add_argument('-a', '--min_pages', type=int, default=1, help="Minimum number of pages an object must have to be included in the report. Default and minimum value is 1.")
 args_general.add_argument('-A', '--min_wasted_pages', type=int, default=1, help="Minimum number of wasted pages an object must have to be included in the report. Default and minimum value is 1.")
-args_general.add_argument('-z', '--min_wasted_size', type=long, default=1, help="Minimum size of wasted space in bytes. Default and minimum is 1.")
+args_general.add_argument('-z', '--min_wasted_size', type=int, default=1, help="Minimum size of wasted space in bytes. Default and minimum is 1.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1%%.")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude. If set along with -n, schemas will be excluded then included.")
@@ -218,7 +218,7 @@ def print_report(result_list):
 
 
 def print_version():
-    print "Version: " + version
+    print("Version: " + version)
 
 
 if __name__ == "__main__":
