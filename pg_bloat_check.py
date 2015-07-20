@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# Script is maintained at https://github.com/keithf4/pg_bloat_check
+
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
