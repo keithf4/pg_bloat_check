@@ -5,15 +5,14 @@
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
-version = "2.0.0"
+version = "2.0.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
-# TODO see about a possible table format
 args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a return deliminated list of objects to exclude from the report (tables and/or indexes). All objects must be schema qualified. Comments are allowed if the line is prepended with "#".""")
 args_general.add_argument('-f', '--format', default="simple", choices=["simple", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Dict is a python dictionary object, which may be useful if taking input into another python script or something that needs a more structured format. Dict also provides more details about dead tuples, empty space & free space. Default is simple.")
-args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Note that table bloat statistics do not include index bloat in their results. Index bloat is always distinct from table bloat and reported separately. Default is "both".""")
+args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
 args_general.add_argument('--norescan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
@@ -111,41 +110,60 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     commit_counter = 0
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    sql_class = """SELECT c.oid, c.relkind, c.relname, n.nspname 
+    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
                     FROM pg_catalog.pg_class c
-                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace """
-                    
-    if args.tablename == None:
-        if args.mode == "both":
-            sql_class += " WHERE relkind IN ('r', 'i', 'm') "
-        elif args.mode == "tables":
-            sql_class += " WHERE relkind IN ('r', 'm') "
-        elif args.mode == "indexes":
-            sql_class += " WHERE relkind IN ('i') "
+                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+                    WHERE relkind IN ('r', 'm') """
 
+    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
+                    FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+                    JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
+                    JOIN pg_catalog.pg_am a ON c.relam = a.oid
+                    WHERE relkind = 'i' 
+                    AND a.amname <> 'gin' """
+
+    if args.tablename != None:
+        sql_tables += " AND n.nspname||'.'||c.relname = %s "
+        sql_indexes += " AND i.indrelid::regclass = %s::regclass "
+
+        sql_class = sql_tables + """
+                    UNION 
+                    """ + sql_indexes
+
+        if args.debug:
+            print("sql_class: " + cur.mogrify(sql_class, [args.tablename, args.tablename] ) )
+        cur.execute(sql_class, [args.tablename, args.tablename] )
+    else:
         # IN clauses work with python tuples. lists were converted by get_bloat() call
         if include_schema_list:
-            sql_class += " AND n.nspname IN %s"
-            if args.debug:
-                print(cur.mogrify(sql_class, (include_schema_list,)))
-            cur.execute(sql_class, (include_schema_list,))
+            sql_tables += " AND n.nspname IN %s"
+            sql_indexes += " AND n.nspname IN %s"
+            filter_list = include_schema_list
         elif exclude_schema_list:
-            sql_class += " AND n.nspname NOT IN %s"
+            sql_tables += " AND n.nspname NOT IN %s"
+            sql_indexes += " AND n.nspname NOT IN %s"
+            filter_list = exclude_schema_list
+
+        if args.mode == 'tables':
+            sql_class = sql_tables
+        elif args.mode == 'indexes':
+            sql_class = sql_indexes
+        elif args.mode == "both":
+            sql_class = sql_tables + """
+                    UNION 
+                    """ + sql_indexes
+
+        if args.mode == "both":
             if args.debug:
-                print("sql_class: " + cur.mogrify(sql_class, (exclude_schema_list,) ))
-            cur.execute(sql_class, (exclude_schema_list,) )
+                print("sql_class: " + cur.mogrify(sql_class, (filter_list,filter_list) ))
+            cur.execute(sql_class, (filter_list,filter_list))
+        elif args.mode == "tables" or args.mode == "indexes":
+            if args.debug:
+                print("sql_class: " + cur.mogrify(sql_class, (filter_list,) ))
+            cur.execute(sql_class, (filter_list,) )
         else:
             cur.execute(sql)
-    else:  # only get bloat for specific table and its indexes
-        sql_class += """ WHERE n.nspname||'.'||c.relname = %s
-                        UNION
-                        SELECT c.oid, c.relkind, c.relname, n.nspname 
-                        FROM pg_catalog.pg_class c
-                        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
-                        JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
-                        WHERE i.indrelid::regclass = %s::regclass"""
-        cur.execute(sql_class, [args.tablename, args.tablename] )
-
 
     object_list = cur.fetchall()
 
