@@ -5,7 +5,7 @@
 import argparse, psycopg2, sys
 from psycopg2 import extras
 
-version = "2.0.1"
+version = "2.0.2"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -113,14 +113,16 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
-                    WHERE relkind IN ('r', 'm') """
+                    WHERE relkind IN ('r', 'm')
+                    AND c.relpersistence <> 't' """
 
     sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
-                    WHERE relkind = 'i' 
+                    WHERE c.relkind = 'i' 
+                    AND indislive = 'true' 
                     AND a.amname <> 'gin' """
 
     if args.tablename != None:
