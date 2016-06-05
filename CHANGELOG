@@ -1,0 +1,22 @@
+2.1.0
+ - Fixed --bloat_schema & --pgstattuple_schema options so they actually work (Github Issue #4)
+ - More fine grained filtering using --exclude_object_file. Each line in the file is now a CSV entry that can provide additional filtering per object in addition to -s, -p & -z. See README for examples (Github Issue #3).
+ - Added json & jsonpretty --format modes.
+ - Changed dict --format mode to just output an unparsed dictionary blob. Previously each object was separated with a return, but this made it more difficult to actually use as a dictionary object. If you need a human readable format of the raw details, use --format=jsonpretty
+ - Check for object existence again before scanning. Avoids issues during long run times with objects that have been dropped since the initial object list was created.
+ - If an index is a primary key, the objecttype column in the bloat statistics table will now be "index_pk" to distinguish them from just a normal index.
+ - The --create_stats_table option will now attempt to drop the tables it creates first before creating them. Will allow any future changes to the stats table to be implemented easier.
+ - Changed --norescan option to --noscan for simplicity.
+
+
+2.0.2
+ - Skip over temp tables and indexes that are marked as dropped (Github Issue #2).
+
+
+2.0.1
+ - Skip over GIN indexes since there's no current way to find bloat with them in pgstattuple. Looking for contributions to fix support this https://github.com/keithf4/pg_bloat_check/issues/1
+
+
+2.0.0
+ - Complete rewrite using pgstattuple contrib module instead of check_postgres.pl query
+ - See --help for more information and blog post at https://www.keithf4.com/checking-for-postgresql-bloat/

@@ -2,20 +2,20 @@
 
 # Script is maintained at https://github.com/keithf4/pg_bloat_check
 
-import argparse, psycopg2, sys
+import argparse, csv, json, psycopg2, sys
 from psycopg2 import extras
 
-version = "2.0.2"
+version = "2.1.0"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
-args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a return deliminated list of objects to exclude from the report (tables and/or indexes). All objects must be schema qualified. Comments are allowed if the line is prepended with "#".""")
-args_general.add_argument('-f', '--format', default="simple", choices=["simple", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Dict is a python dictionary object, which may be useful if taking input into another python script or something that needs a more structured format. Dict also provides more details about dead tuples, empty space & free space. Default is simple.")
+args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a list of objects to exclude from the report (tables and/or indexes). Each line is a CSV entry in the format: objectname,bytes_wasted,percent_wasted. All objects must be schema qualified. bytes_wasted & percent_wasted are additional filter values on top of -s, -p, and -z to exclude the given object unless these values are also exceeded. Set either of these values to zero (or leave them off entirely) to exclude the object no matter what its bloat level. Comments are allowed if the line is prepended with "#". See the README.md for clearer examples of how to use this for more fine grained filtering.""")
+args_general.add_argument('-f', '--format', default="simple", choices=["simple", "json", "jsonpretty", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Json provides standardized json output which may be useful if taking input into something that needs a more structured format. Json also provides more details about dead tuples, empty space & free space. jsonpretty outputs in a more human readable format. Dict is the same as json but in the form of a python dictionary. Default is simple.")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
-args_general.add_argument('--norescan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
+args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1 (DO NOT include percent sign in given value).")
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
 args_general.add_argument('--quiet', action="store_true", help="Insert the data into the bloat stastics table without providing any console output.")
@@ -34,15 +34,18 @@ args = parser.parse_args()
 
 
 def check_pgstattuple(conn):
-    sql = "SELECT extversion FROM pg_catalog.pg_extension WHERE extname = 'pgstattuple'"
+    sql = "SELECT e.extversion, n.nspname FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON e.extnamespace = n.oid WHERE extname = 'pgstattuple'"
     cur = conn.cursor()
     cur.execute(sql)
-    pgstattuple_version = cur.fetchone()
-    if pgstattuple_version == None:
+    pgstattuple_info = cur.fetchone()
+    if pgstattuple_info == None:
         print("pgstattuple extension not found. Please ensure it is installed in the database this script is connecting to.")
         sys.exit(2)
-    else:
-        return pgstattuple_version[0]
+    if args.pgstattuple_schema != None:
+        if args.pgstattuple_schema != pgstattuple_info[1]:
+            print("pgstattuple not found in the schema given by --pgstattuple_schema option: " + args.pgstattuple_schema + ". Found instead in: " + pgstattuple_info[1]+".")
+            sys.exit(2)
+    return pgstattuple_info[0]
 
 
 def create_conn():
@@ -59,23 +62,40 @@ def create_list(list_type, list_items):
     if list_type == "csv":
         split_list = list_items.split(',')
     elif list_type == "file":
-        try:
-            fh = open(list_items, 'r')
-            for line in fh:
-                if not line.strip().startswith('#'):
-                    split_list.append(line.strip())
-        except IOError as e:
-           print("Cannot access exclude file " + list_items + ": " + e.strerror)
-           sys.exit(2)
+        with open(list_items, 'r') as csvfile:
+            objectreader = csv.DictReader(csvfile, fieldnames=['objectname', 'max_wasted', 'max_perc'])
+            for o in objectreader:
+                if not o['objectname'].startswith('#'):
+                    o['objectname'] = o['objectname'].strip()
+
+                    if o['max_wasted'] != None:
+                        o['max_wasted'] = int(o['max_wasted'])
+                    else:
+                        o['max_wasted'] = 0
+
+                    if o['max_perc'] != None:
+                        o['max_perc'] = float(o['max_perc'])
+                    else:
+                        o['max_perc'] = 0
+
+                    split_list.append(o)
 
     return split_list
 
 
-def create_bloat_table(conn):
-    create_sql = "CREATE TABLE IF NOT EXISTS "
+def create_stats_table(conn):
     if args.bloat_schema != None:
-        create_sql += args.view_schema + "."
-    sql = create_sql + """bloat_stats (schemaname text NOT NULL
+        parent_sql = args.bloat_schema + "." + "bloat_stats"
+        tables_sql = args.bloat_schema + "." + "bloat_tables"
+        indexes_sql = args.bloat_schema + "." + "bloat_indexes"
+    else:
+        parent_sql = "bloat_stats"
+        tables_sql = "bloat_tables"
+        indexes_sql = "bloat_indexes"
+
+    drop_sql = "DROP TABLE IF EXISTS " + parent_sql + " CASCADE"
+
+    sql = "CREATE TABLE " + parent_sql + """ (schemaname text NOT NULL
                             , objectname text NOT NULL
                             , objecttype text NOT NULL
                             , size_bytes bigint
@@ -89,16 +109,31 @@ def create_bloat_table(conn):
                             , stats_timestamp timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
                             , approximate boolean NOT NULL DEFAULT false)"""
     cur = conn.cursor()
+    if args.debug:
+        print(cur.mogrify("drop_sql: " + drop_sql))
+    cur.execute(drop_sql)
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
-    sql = create_sql + "bloat_tables (LIKE bloat_stats INCLUDING ALL) INHERITS (bloat_stats)"
+    sql = "CREATE TABLE " + tables_sql + " (LIKE " + parent_sql + " INCLUDING ALL) INHERITS (" + parent_sql + ")"
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
-    sql = create_sql + "bloat_indexes (LIKE bloat_stats INCLUDING ALL) INHERITS (bloat_stats)"
+    sql = "CREATE TABLE " + indexes_sql + " (LIKE " + parent_sql + " INCLUDING ALL) INHERITS (" + parent_sql + ")"
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
-    sql = "COMMENT ON TABLE bloat_stats IS 'Table providing raw data for table & index bloat'"
+    sql = "COMMENT ON TABLE " + parent_sql + " IS 'Table providing raw data for table & index bloat'"
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
-    sql = "COMMENT ON TABLE bloat_tables IS 'Table providing raw data for table bloat'"
+    sql = "COMMENT ON TABLE " + tables_sql + " IS 'Table providing raw data for table bloat'"
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
-    sql = "COMMENT ON TABLE bloat_indexes IS 'Table providing raw data for index bloat'"
+    sql = "COMMENT ON TABLE " + indexes_sql + " IS 'Table providing raw data for index bloat'"
+    if args.debug:
+        print(cur.mogrify("sql: " + sql))
     cur.execute(sql)
 
     conn.commit()
@@ -110,13 +145,13 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     commit_counter = 0
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
+    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     WHERE relkind IN ('r', 'm')
                     AND c.relpersistence <> 't' """
 
-    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname 
+    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -171,7 +206,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
     sql = "TRUNCATE "
     if args.bloat_schema:
-        sql += args.view_schema + "."
+        sql += args.bloat_schema + "."
     if args.mode == "tables" or args.mode == "both":
         sql_table = sql + "bloat_tables"
         cur.execute(sql_table)
@@ -189,20 +224,32 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         if args.debug:
             print(o)
         if exclude_object_list and args.tablename == None:
+            # completely skip object being scanned if it's in the excluded file list with max values equal to zero
             match_found = False
             for e in exclude_object_list:
-                if e == o['nspname'] + "." + o['relname']:
+                if (e['objectname'] == o['nspname'] + "." + o['relname']) and (e['max_wasted'] == 0) and (e['max_perc'] == 0):
                     match_found = True
             if match_found:
                 continue
+        
+        sql = """ SELECT count(*) FROM pg_catalog.pg_class c 
+                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid 
+                    WHERE n.nspname = %s
+                    AND c.relname = %s """
+        cur.execute(sql, [o['nspname'], o['relname']])
+        result = cur.fetchone()[0]
+        if args.debug:
+            print("Checking for table existance before scanning: " + str(result))
+        if result == 0:
+            continue  # just skip over it. object was dropped since initial list was made
 
         if args.quick:
             sql = "SELECT table_len, approx_tuple_count AS tuple_count, approx_tuple_len AS tuple_len, approx_tuple_percent AS tuple_percent, dead_tuple_count,  "
             sql += "dead_tuple_len, dead_tuple_percent, approx_free_space AS free_space, approx_free_percent AS free_percent FROM "
         else:
             sql = "SELECT table_len, tuple_count, tuple_len, tuple_percent, dead_tuple_count, dead_tuple_len, dead_tuple_percent, free_space, free_percent FROM "
-        if args.bloat_schema != None:
-            sql += " \"" + arg.pgstattuple_schema + "\"."
+        if args.pgstattuple_schema != None:
+            sql += " \"" + args.pgstattuple_schema + "\"."
         if args.quick:
             sql += "pgstattuple_approx(%s::regclass) "
             if args.tablename == None:
@@ -229,9 +276,23 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             print(stats)
 
         if stats: # completely empty objects will be zero for all stats, so this would be an empty set
+
+            if exclude_object_list and args.tablename == None:
+                # If object in the exclude list has max values, compare them to see if it should be left out of report
+                wasted_space = stats[0]['dead_tuple_len'] + stats[0]['free_space']
+                wasted_perc = stats[0]['dead_tuple_percent'] + stats[0]['free_percent']
+                for e in exclude_object_list:
+                    if (e['objectname'] == o['nspname'] + "." + o['relname']):
+                        if ( (e['max_wasted'] < wasted_space ) or (e['max_perc'] < wasted_perc ) ):
+                            match_found = False
+                        else:
+                            match_found = True
+                if match_found:
+                    continue
+
             sql = "INSERT INTO "
             if args.bloat_schema != None:
-                sql += args.view_schema + "."
+                sql += args.bloat_schema + "."
 
             if o['relkind'] == "r" or o['relkind'] == "m":
                 sql+= "bloat_tables"
@@ -241,7 +302,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     objecttype = "materialized_view"
             elif o['relkind'] == "i":
                 sql+= "bloat_indexes"
-                objecttype = "index"
+                if o['indisprimary'] == True:
+                    objecttype = "index_pk"
+                else:
+                    objecttype = "index"
                 
             sql += """ (schemaname
                         , objectname 
@@ -289,13 +353,17 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.debug:
                 print("Batch committed. Object scanned count: " + str(commit_counter))
             conn.commit()
+    conn.commit()
     cur.close()
 ## end get_bloat()            
 
 
 def print_report(result_list):
-    for r in result_list:
-        print(r)
+    if args.format == "simple":
+        for r in result_list:
+            print(r)
+    else:
+        print(result_list)
 
 def print_version():
     print("Version: " + version)
@@ -324,14 +392,14 @@ if __name__ == "__main__":
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
     if args.create_stats_table:
-        create_bloat_table(conn)
+        create_stats_table(conn)
         close_conn(conn)
         sys.exit(1)
 
     sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE tablename = %s"
     if args.bloat_schema != None:
         sql += " AND schemaname = %s"
-        cur.execute(sql, [args.bloat_schema, 'bloat_stats'])
+        cur.execute(sql, ['bloat_stats', args.bloat_schema])
     else:
         cur.execute(sql, ['bloat_stats'])
     table_exists = cur.fetchone()
@@ -355,7 +423,7 @@ if __name__ == "__main__":
     else:
         exclude_object_list = []
 
-    if args.norescan == False:
+    if args.noscan == False:
         get_bloat(conn, tuple(exclude_schema_list), tuple(include_schema_list), exclude_object_list)
 
     # Final commit to ensure transaction that inserted stats data closes
@@ -368,10 +436,11 @@ if __name__ == "__main__":
         dict_cols = "schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate"
         if args.format == "simple":
             sql = "SELECT " + simple_cols + " FROM "
-        elif args.format == "dict":
+        elif args.format == "dict" or args.format=="json" or args.format=="jsonpretty":
             sql = "SELECT " + dict_cols + " FROM "
         else:
-            print("Unsupported --format given. Use either 'simple' or 'dict'.")
+            print("Unsupported --format given. Use 'simple', 'dict' 'json', or 'jsonpretty'.")
+            sys.exit(2)
         if args.bloat_schema != None:
             sql += args.bloat_schema + "."
         if args.mode == "tables":
@@ -389,7 +458,7 @@ if __name__ == "__main__":
                 justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
                 result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
                 counter += 1
-            elif args.format == "dict":
+            elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
                 result_dict = dict([('schemaname', r['schemaname'])
                                     , ('objectname', r['objectname'])
                                     , ('objecttype', r['objecttype'])
@@ -404,11 +473,17 @@ if __name__ == "__main__":
                                     , ('approximate', r['approximate'])
                                    ])
                 result_list.append(result_dict)
+
+        if args.format == "json":
+            result_list = json.dumps(result_list)
+        elif args.format == "jsonpretty":
+            result_list = json.dumps(result_list, indent=4, separators=(',',': '))
     
         if len(result_list) >= 1:
             print_report(result_list)
         else:
-            print("No bloat found for given parameters")
+            if args.quiet == False:
+                print("No bloat found for given parameters")
 
     close_conn(conn)
 
