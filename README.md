@@ -20,6 +20,15 @@ The bytes_wasted and percent_wasted are additional filters on top of -s, -z and 
 
 Examples
 --------
+First the setup. 
+```
+admin@mydb=# CREATE EXTENSION pgstattuple;
+
+pg_bloat_check.py -c dbname=mydb --create_stats_table
+
+pg_bloat_check.py -c "host=192.168.1.201 dbname=mydb user=admin" --create_stats_table --bloat_schema=monitoring
+```
+The first example above installs the stats tables to the default schema in your search path. You only have to run that once per database and if you run it again, it just drops the table if it exists and recreates it. If you want it in a different schema, --bloat_schema lets you set that, but you must then use that option every time you run the script or add that schema to your search path. The second example shows that as well as connecting to a remote system.
 
 ```
 pg_bloat_check.py -c dbname=mydb -z 10485760 -p 45 -s 5242880 
