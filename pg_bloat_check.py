@@ -394,7 +394,7 @@ if __name__ == "__main__":
     pgstattuple_version = float(check_pgstattuple(conn))
     if args.quick:
         if pgstattuple_version < 1.3:
-            print("--quick option requires PostgreSQL 9.5 or greater")
+            print("--quick option requires pgstattuple version 1.3 or greater (PostgreSQL 9.5)")
             sys.exit(2)
         if (args.mode == "indexes" or args.mode == "both"):
             print("--quick option can only be used with --mode=tables")
