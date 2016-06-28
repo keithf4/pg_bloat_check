@@ -1,3 +1,7 @@
+2.1.1
+ - Improve backward compatibility for PostgreSQL versions older than 9.3 (pg_index.indislive did not exist before then) (Github Issue #5)
+
+
 2.1.0
  - Fixed --bloat_schema & --pgstattuple_schema options so they actually work (Github Issue #4)
  - More fine grained filtering using --exclude_object_file. Each line in the file is now a CSV entry that can provide additional filtering per object in addition to -s, -p & -z. See README for examples (Github Issue #3).

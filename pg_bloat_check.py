@@ -5,7 +5,7 @@
 import argparse, csv, json, psycopg2, sys
 from psycopg2 import extras
 
-version = "2.1.0"
+version = "2.1.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -141,6 +141,7 @@ def create_stats_table(conn):
 
 
 def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_list):
+    pg_version = get_pg_version(conn)
     sql = ""
     commit_counter = 0
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
@@ -157,8 +158,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
                     WHERE c.relkind = 'i' 
-                    AND indislive = 'true' 
                     AND a.amname <> 'gin' """
+
+    if int(pg_version[0]) >= 9 and int(pg_version[1]) >= 3:
+        sql_indexes += " AND indislive = 'true' "
 
     if args.tablename != None:
         sql_tables += " AND n.nspname||'.'||c.relname = %s "
@@ -356,6 +359,14 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     conn.commit()
     cur.close()
 ## end get_bloat()            
+
+
+def get_pg_version(conn):
+    sql = "SELECT current_setting('server_version')"
+    cur = conn.cursor()
+    cur.execute(sql)
+    pg_version = cur.fetchone()[0].split(".")
+    return pg_version
 
 
 def print_report(result_list):
