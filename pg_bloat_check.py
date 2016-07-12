@@ -158,7 +158,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
                     WHERE c.relkind = 'i' 
-                    AND a.amname <> 'gin' """
+                    AND a.amname <> 'gin' AND a.amname <> 'brin' """
 
     if int(pg_version[0]) >= 9 and int(pg_version[1]) >= 3:
         sql_indexes += " AND indislive = 'true' "
@@ -480,7 +480,7 @@ if __name__ == "__main__":
                                     , ('dead_tuple_size_bytes', int(r['dead_tuple_size_bytes']))
                                     , ('dead_tuple_percent', str(r['dead_tuple_percent'])+"%" ) 
                                     , ('free_space_bytes', int(r['free_space_bytes']))
-                                    , ('free_percent', str(r['dead_tuple_percent'])+"%" ) 
+                                    , ('free_percent', str(r['free_percent'])+"%" ) 
                                     , ('approximate', r['approximate'])
                                    ])
                 result_list.append(result_dict)
