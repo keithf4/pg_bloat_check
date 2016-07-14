@@ -5,7 +5,7 @@
 import argparse, csv, json, psycopg2, sys
 from psycopg2 import extras
 
-version = "2.1.1"
+version = "2.2.0"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -15,6 +15,7 @@ args_general.add_argument('-f', '--format', default="simple", choices=["simple",
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
+args_general.add_argument('--noanalyze', action="store_true", help="To ensure accurate fillfactor statistics, an analyze if each object being scanned is done before the check for bloat. Set this to skip the analyze step and reduce overall runtime, however your bloat statistics may not be as accurate.")
 args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1 (DO NOT include percent sign in given value).")
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
@@ -107,7 +108,9 @@ def create_stats_table(conn):
                             , free_space_bytes bigint
                             , free_percent float8
                             , stats_timestamp timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
-                            , approximate boolean NOT NULL DEFAULT false)"""
+                            , approximate boolean NOT NULL DEFAULT false
+                            , relpages bigint NOT NULL DEFAULT 1
+                            , fillfactor float8 NOT NULL DEFAULT 100)"""
     cur = conn.cursor()
     if args.debug:
         print(cur.mogrify("drop_sql: " + drop_sql))
@@ -144,21 +147,26 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     pg_version = get_pg_version(conn)
     sql = ""
     commit_counter = 0
+    analyzed_tables = []
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary
+    sql = "SELECT current_setting('block_size')"
+    cur.execute(sql)
+    block_size = int(cur.fetchone()[0])
+
+    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     WHERE relkind IN ('r', 'm')
                     AND c.relpersistence <> 't' """
 
-    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary 
+    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
                     WHERE c.relkind = 'i' 
-                    AND a.amname <> 'gin' """
+                    AND a.amname <> 'gin' AND a.amname <> 'brin' """
 
     if int(pg_version[0]) >= 9 and int(pg_version[1]) >= 3:
         sql_indexes += " AND indislive = 'true' "
@@ -234,17 +242,61 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     match_found = True
             if match_found:
                 continue
+
+        if o['relkind'] == "i": 
+            fillfactor = 90.0
+        else:
+            fillfactor = 100.0
+
+        if o['reloptions'] != None:
+            reloptions_dict = dict(o.split('=') for o in o['reloptions'])
+            if 'fillfactor' in reloptions_dict:
+                fillfactor = float(reloptions_dict['fillfactor'])
         
         sql = """ SELECT count(*) FROM pg_catalog.pg_class c 
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid 
                     WHERE n.nspname = %s
                     AND c.relname = %s """
         cur.execute(sql, [o['nspname'], o['relname']])
-        result = cur.fetchone()[0]
+        exists = cur.fetchone()[0]
         if args.debug:
-            print("Checking for table existance before scanning: " + str(result))
-        if result == 0:
+            print("Checking for table existance before scanning: " + str(exists))
+        if exists == 0:
             continue  # just skip over it. object was dropped since initial list was made
+
+        if args.noanalyze != True:
+            if o['relkind'] == "r" or o['relkind'] == "m":
+                quoted_table = "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+            else:
+                # get table that index is a part of
+                sql = """SELECT n.nspname, c.relname
+                            FROM pg_catalog.pg_class c 
+                            JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
+                            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
+                            WHERE indexrelid::regclass = %s::regclass"""
+                cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ] )
+                result = cur.fetchone()
+                quoted_table = "\"" + result[0] + "\".\"" + result[1] + "\""
+
+            # maintain a list of analyzed tables so that if a table was already analyzed, it's not again (ex. mulitple indexes on same table)
+            if quoted_table in analyzed_tables:
+                if args.debug:
+                    print("Table already analyzed. Skipping...")
+                pass
+            else:
+                sql = "ANALYZE " + quoted_table
+                if args.debug:
+                    print(cur.mogrify(sql, [quoted_table]))
+                cur.execute(sql)
+                analyzed_tables.append(quoted_table)
+        # end noanalyze check
+
+        sql = """ SELECT c.relpages FROM pg_catalog.pg_class c 
+                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid 
+                    WHERE n.nspname = %s
+                    AND c.relname = %s """
+        cur.execute(sql, [o['nspname'], o['relname']])
+        relpages = int(cur.fetchone()[0])
 
         if args.quick:
             sql = "SELECT table_len, approx_tuple_count AS tuple_count, approx_tuple_len AS tuple_len, approx_tuple_percent AS tuple_percent, dead_tuple_count,  "
@@ -258,11 +310,13 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.tablename == None:
                 sql += " WHERE table_len > %s"
                 sql += " AND ( (dead_tuple_len + approx_free_space) > %s OR (dead_tuple_percent + approx_free_percent) > %s )"
+#TODO REMOVE                sql += " AND ( (dead_tuple_len + (approx_free_space - " + str(ff_relpages_size) + ") ) > %s OR (dead_tuple_percent + (approx_free_percent - " + str(100-fillfactor) + ") ) > %s )"
         else:
             sql += "pgstattuple(%s::regclass) "
             if args.tablename == None:
                 sql += " WHERE table_len > %s"
                 sql += " AND ( (dead_tuple_len + free_space) > %s OR (dead_tuple_percent + free_percent) > %s )"
+#TODO REMOVE                sql += " AND ( (dead_tuple_len + (free_space - " + str(ff_relpages_size) + ") ) > %s OR (dead_tuple_percent + (free_percent - " + str(100-fillfactor) + ") ) > %s )"
 
         if args.tablename == None:
             if args.debug:
@@ -280,10 +334,12 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if stats: # completely empty objects will be zero for all stats, so this would be an empty set
 
+            # determine byte size of fillfactor pages 
+            ff_relpages_size = (relpages - ( fillfactor/100 * relpages ) ) * block_size
+
             if exclude_object_list and args.tablename == None:
                 # If object in the exclude list has max values, compare them to see if it should be left out of report
-                wasted_space = stats[0]['dead_tuple_len'] + stats[0]['free_space']
-                wasted_perc = stats[0]['dead_tuple_percent'] + stats[0]['free_percent']
+                wasted_space = stats[0]['dead_tuple_len'] + (stats[0]['free_space'] - ff_relpages_size)
                 for e in exclude_object_list:
                     if (e['objectname'] == o['nspname'] + "." + o['relname']):
                         if ( (e['max_wasted'] < wasted_space ) or (e['max_perc'] < wasted_perc ) ):
@@ -321,8 +377,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                         , dead_tuple_percent
                         , free_space_bytes
                         , free_percent
-                        , approximate)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) """
+                        , approximate
+                        , relpages
+                        , fillfactor)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) """
             if args.debug:
                 print("insert sql: " + cur.mogrify(sql, [     o['nspname']
                                                             , o['relname']
@@ -336,6 +394,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                                             , stats[0]['free_space']
                                                             , stats[0]['free_percent']
                                                             , approximate
+                                                            , relpages
+                                                            , fillfactor
                                                         ])) 
             cur.execute(sql, [   o['nspname']
                                , o['relname']
@@ -349,6 +409,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                , stats[0]['free_space']
                                , stats[0]['free_percent']
                                , approximate
+                               , relpages
+                               , fillfactor
                              ]) 
 
         commit_counter += 1
@@ -400,6 +462,7 @@ if __name__ == "__main__":
             print("--quick option can only be used with --mode=tables")
             sys.exit(2)
 
+
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
     if args.create_stats_table:
@@ -417,7 +480,7 @@ if __name__ == "__main__":
     if table_exists == None:
         print("Required statistics table does not exist. Please run --create_stats_table first before running a bloat scan.")
         sys.exit(2)
-        
+
     if args.exclude_schema != None:
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
@@ -443,8 +506,18 @@ if __name__ == "__main__":
     counter = 1
     result_list = []
     if args.quiet == False or args.debug == True:
-        simple_cols = "schemaname, objectname, objecttype, (dead_tuple_percent + free_percent) AS total_waste_percent, pg_size_pretty(dead_tuple_size_bytes + free_space_bytes) AS total_wasted_size"
-        dict_cols = "schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate"
+        simple_cols = """schemaname
+                         , objectname
+                         , objecttype
+                         , CASE 
+                            WHEN (dead_tuple_percent + (free_percent - (100-fillfactor))) < 0 THEN 0
+                            ELSE (dead_tuple_percent + (free_percent - (100-fillfactor)))
+                           END AS total_waste_percent
+                         , CASE
+                            WHEN (dead_tuple_size_bytes + (free_space_bytes - (relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) < 0 THEN '0 bytes'
+                            ELSE pg_size_pretty((dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) )::bigint)
+                           END AS total_wasted_size"""
+        dict_cols = "schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate, relpages, fillfactor"
         if args.format == "simple":
             sql = "SELECT " + simple_cols + " FROM "
         elif args.format == "dict" or args.format=="json" or args.format=="jsonpretty":
@@ -460,7 +533,7 @@ if __name__ == "__main__":
             sql += "bloat_indexes"
         else:
             sql += "bloat_stats"
-        sql += " ORDER BY (dead_tuple_size_bytes + free_space_bytes) DESC"
+        sql += " ORDER BY (dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) )) DESC"
         cur.execute(sql)
         result = cur.fetchall()
 
@@ -480,7 +553,7 @@ if __name__ == "__main__":
                                     , ('dead_tuple_size_bytes', int(r['dead_tuple_size_bytes']))
                                     , ('dead_tuple_percent', str(r['dead_tuple_percent'])+"%" ) 
                                     , ('free_space_bytes', int(r['free_space_bytes']))
-                                    , ('free_percent', str(r['dead_tuple_percent'])+"%" ) 
+                                    , ('free_percent', str(r['free_percent'])+"%" ) 
                                     , ('approximate', r['approximate'])
                                    ])
                 result_list.append(result_dict)

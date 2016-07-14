@@ -1,3 +1,13 @@
+2.2.0
+ - Account for fillfactor settings in both tables and indexes when determining wasted space. This will likely cause an expected 10% drop in most index bloat reported (if fillfactor hasn't been adjusted manually).
+    - The "simple" output mode will automatically account for the fillfactor when outputing the wasted space values. For dict & json output, the original raw values of all statistics are given along with that object's fillfactor and relpage count so it can be calculated manually.
+    - Added new "fillfactor" & "relpages" columns to bloat statistics tables. Run --create_stats_table again to recreate the table with the new, required columns. Note this will wipe out any data contained in the stats table so if you need to preserve it, do so before updating script to this version.
+    - Added new --noanalyze option. Accounting for fillfactor requires an accurate page count estimate for each object, so it is now analyzed before scanning for bloat. This will cause this script to take slightly longer, but provide more accurate bloat statistics. You can set this option to skip the analyze. However, unless a recent analyze was done, this may cause the bloat report to be less accurate.
+
+- pgstattuple does not currently support BRIN indexes. Excluded for now (Pull Request #6).
+- Fixed mismatch in json/dict output. It was giving the dead_tuple_percent value in the free_percent key (Pull Request #6). 
+
+
 2.1.1
  - Improve backward compatibility for PostgreSQL versions older than 9.3 (pg_index.indislive did not exist before then) (Github Issue #5)
 
