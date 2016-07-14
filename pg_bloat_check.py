@@ -2,10 +2,11 @@
 
 # Script is maintained at https://github.com/keithf4/pg_bloat_check
 
-import argparse, csv, json, psycopg2, sys
+import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
+from random import randint
 
-version = "2.2.0"
+version = "2.3.0"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -21,6 +22,7 @@ args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
 args_general.add_argument('--quiet', action="store_true", help="Insert the data into the bloat stastics table without providing any console output.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before commiting inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
+args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index.")
 args_general.add_argument('-s', '--min_size', type=int, default=1, help="Minimum size in bytes of object to scan (table or index). Default and minimum value is 1.")
 args_general.add_argument('-t', '--tablename', help="Scan for bloat only on the given table. Must be schema qualified. This always gets both table and index bloat and overrides all other filter options so you always get the bloat statistics for the table no matter what they are.")
 args_general.add_argument('--version', action="store_true", help="Print version of this script.")
@@ -310,13 +312,11 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.tablename == None:
                 sql += " WHERE table_len > %s"
                 sql += " AND ( (dead_tuple_len + approx_free_space) > %s OR (dead_tuple_percent + approx_free_percent) > %s )"
-#TODO REMOVE                sql += " AND ( (dead_tuple_len + (approx_free_space - " + str(ff_relpages_size) + ") ) > %s OR (dead_tuple_percent + (approx_free_percent - " + str(100-fillfactor) + ") ) > %s )"
         else:
             sql += "pgstattuple(%s::regclass) "
             if args.tablename == None:
                 sql += " WHERE table_len > %s"
                 sql += " AND ( (dead_tuple_len + free_space) > %s OR (dead_tuple_percent + free_percent) > %s )"
-#TODO REMOVE                sql += " AND ( (dead_tuple_len + (free_space - " + str(ff_relpages_size) + ") ) > %s OR (dead_tuple_percent + (free_percent - " + str(100-fillfactor) + ") ) > %s )"
 
         if args.tablename == None:
             if args.debug:
@@ -438,8 +438,73 @@ def print_report(result_list):
     else:
         print(result_list)
 
+
 def print_version():
     print("Version: " + version)
+
+
+def rebuild_index(conn):
+    if args.bloat_schema != None:
+        index_table = args.bloat_schema + "bloat_indexes"
+    else:
+        index_table = "bloat_indexes"
+
+    sql = "SELECT schemaname, objectname, objecttype FROM " + index_table + " ORDER BY 1,2,3"
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute(sql)
+    result = cur.fetchall()
+    if result == None:
+        print("Bloat statistics table contains no indexes.")
+        sys.exit(1)
+    
+    for i in result:
+        temp_index_name = "pgbloatcheck_rebuild_" + str(randint(1000,9999))
+        quoted_index = "\"" + i['schemaname'] + "\".\"" + i['objectname'] + "\""
+        # get table index is in
+        sql = """SELECT n.nspname, c.relname
+                    FROM pg_catalog.pg_class c 
+                    JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
+                    WHERE indexrelid::regclass = %s::regclass"""
+        cur.execute(sql, [ quoted_index ] )
+        result = cur.fetchone()
+        quoted_table = "\"" + result[0] + "\".\"" + result[1] + "\""
+        # create temp index definition
+        sql = "SELECT pg_get_indexdef(%s::regclass)"
+        cur.execute(sql, [ "\"" + i['schemaname'] +"\".\""+ i['objectname'] + "\"" ])
+        index_def = cur.fetchone()[0]
+        index_def = re.sub(r' INDEX', ' INDEX CONCURRENTLY', index_def, 1)
+        index_def = index_def.replace(i['objectname'], temp_index_name, 1)
+        index_def += ";"
+        # start output
+        print("")
+        print(index_def)
+        # analyze table
+        print("ANALYZE " + quoted_table + ";")
+        # TODO Account for primary keys
+        if i['objecttype'] == "index":
+            # drop old index or unique constraint
+            sql = "SELECT count(*) FROM pg_catalog.pg_constraint WHERE conindid::regclass = %s::regclass"
+            cur.execute(sql, [quoted_index])
+            isconstraint = int(cur.fetchone()[0])
+            if isconstraint == 1:
+                print "ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";"
+            else:
+                print("DROP INDEX CONCURRENTLY " + quoted_index + ";")
+            # analyze again
+            print("ANALYZE " + quoted_table + ";")
+            # rename temp index to original name
+            print("ALTER INDEX \"" + i['schemaname'] + "\"." + temp_index_name + " RENAME TO \"" + i['objectname'] + "\";")
+        elif i['objecttype'] == "index_pk":
+            print "ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";"
+            # analyze again
+            print("ANALYZE " + quoted_table + ";")
+            print("ALTER TABLE " + quoted_table + " ADD CONSTRAINT " + i['objectname'] + " PRIMARY KEY USING INDEX " + temp_index_name + ";")
+            # analyze again
+            print("ANALYZE " + quoted_table + ";")
+
+        print("")
+# end rebuild_index
 
 
 if __name__ == "__main__":
@@ -480,6 +545,11 @@ if __name__ == "__main__":
     if table_exists == None:
         print("Required statistics table does not exist. Please run --create_stats_table first before running a bloat scan.")
         sys.exit(2)
+
+    if args.rebuild_index:
+        rebuild_index(conn)
+        close_conn(conn)
+        sys.exit(1)
 
     if args.exclude_schema != None:
         exclude_schema_list = create_list('csv', args.exclude_schema)

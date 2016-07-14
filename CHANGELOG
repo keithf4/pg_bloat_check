@@ -1,3 +1,10 @@
+2.3.0
+- Added --rebuild_index argument. This generates SQL statement blocks that can be used to rebuild indexes with minimal impact on database locks.
+    - It does not run the statements it generates, it only outputs them to STDOUT.
+    - Handles primary keys & unique constraints. Unique constraints are rebuilt as unique indexes. They are technically the same under the hood as far as PostgreSQL is concerned and having them as an index makes them easier to rebuild in the future since they require fewer locks.
+    - CONCURRENTLY and ANALYZE statements require no locks on the tables involved. All ALTER TABLE statements require an exclusive lock on the table, so monitor locking carefully on those steps.
+
+
 2.2.0
  - Account for fillfactor settings in both tables and indexes when determining wasted space. This will likely cause an expected 10% drop in most index bloat reported (if fillfactor hasn't been adjusted manually).
     - The "simple" output mode will automatically account for the fillfactor when outputing the wasted space values. For dict & json output, the original raw values of all statistics are given along with that object's fillfactor and relpage count so it can be calculated manually.
