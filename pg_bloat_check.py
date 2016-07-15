@@ -51,6 +51,30 @@ def check_pgstattuple(conn):
     return pgstattuple_info[0]
 
 
+def check_pg_version(conn, min_version):
+    # Returns true if the current version is greater than or equal to the min version given
+    min_version = min_version.split(".")
+    sql = "SELECT current_setting('server_version')"
+    cur= conn.cursor()
+    cur.execute(sql)
+    current_version = cur.fetchone()[0].split(".")
+    if int(current_version[0]) > int(min_version[0]):
+        return True
+    if int(current_version[0]) == int(min_version[0]):
+        if current_version[1].isdigit():
+            if int(current_version[1]) > int(min_version[1]):
+                return True
+            if current_version[2] == min_version[2]:
+                if current_version[2] > min_version[2]:
+                    return True
+        else:
+            # If not a digit, means it's a test version and you're on your own if it fails
+            if args.debug:
+                print("Detected non-release version of PostgreSQL. All version checking disabled.")
+            return True
+    return False
+
+
 def create_conn():
     conn = psycopg2.connect(args.connection)
     return conn
@@ -146,7 +170,6 @@ def create_stats_table(conn):
 
 
 def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_list):
-    pg_version = get_pg_version(conn)
     sql = ""
     commit_counter = 0
     analyzed_tables = []
@@ -170,7 +193,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     WHERE c.relkind = 'i' 
                     AND a.amname <> 'gin' AND a.amname <> 'brin' """
 
-    if int(pg_version[0]) >= 9 and int(pg_version[1]) >= 3:
+    if check_pg_version(conn, "9.3.0"):
         sql_indexes += " AND indislive = 'true' "
 
     if args.tablename != None:
@@ -423,14 +446,6 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 ## end get_bloat()            
 
 
-def get_pg_version(conn):
-    sql = "SELECT current_setting('server_version')"
-    cur = conn.cursor()
-    cur.execute(sql)
-    pg_version = cur.fetchone()[0].split(".")
-    return pg_version
-
-
 def print_report(result_list):
     if args.format == "simple":
         for r in result_list:
@@ -481,7 +496,6 @@ def rebuild_index(conn):
         print(index_def)
         # analyze table
         print("ANALYZE " + quoted_table + ";")
-        # TODO Account for primary keys
         if i['objecttype'] == "index":
             # drop old index or unique constraint
             sql = "SELECT count(*) FROM pg_catalog.pg_constraint WHERE conindid::regclass = %s::regclass"

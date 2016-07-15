@@ -3,6 +3,7 @@
     - It does not run the statements it generates, it only outputs them to STDOUT.
     - Handles primary keys & unique constraints. Unique constraints are rebuilt as unique indexes. They are technically the same under the hood as far as PostgreSQL is concerned and having them as an index makes them easier to rebuild in the future since they require fewer locks.
     - CONCURRENTLY and ANALYZE statements require no locks on the tables involved. All ALTER TABLE statements require an exclusive lock on the table, so monitor locking carefully on those steps.
+- Allow script to work with non-release versions of PostgreSQL (ex 9.6beta2).
 
 
 2.2.0
