@@ -64,8 +64,8 @@ def check_pg_version(conn, min_version):
         if current_version[1].isdigit():
             if int(current_version[1]) > int(min_version[1]):
                 return True
-            if current_version[2] == min_version[2]:
-                if current_version[2] > min_version[2]:
+            if int(current_version[1]) == int(min_version[1]):
+                if int(current_version[2]) > int(min_version[2]):
                     return True
         else:
             # If not a digit, means it's a test version and you're on your own if it fails
