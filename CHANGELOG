@@ -1,3 +1,7 @@
+2.3.1
+- Fixed undefined variable error when using wasted space & wasted percentage options in the --exclude_object_file file
+
+
 2.3.0
 - Added --rebuild_index argument. This generates SQL statement blocks that can be used to rebuild indexes with minimal impact on database locks.
     - It does not run the statements it generates, it only outputs them to STDOUT.
