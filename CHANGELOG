@@ -1,3 +1,7 @@
+2.3.2
+- Do not rely on OID from pg_class to perform scanning operations anymore. Could possibly change mid-run without the object name changing and cause script failure.
+
+
 2.3.1
 - Fixed undefined variable error when using wasted space & wasted percentage options in the --exclude_object_file file
 

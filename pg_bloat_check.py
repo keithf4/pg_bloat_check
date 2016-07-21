@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.3.1"
+version = "2.3.2"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -179,13 +179,13 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     cur.execute(sql)
     block_size = int(cur.fetchone()[0])
 
-    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
+    sql_tables = """ SELECT c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     WHERE relkind IN ('r', 'm')
                     AND c.relpersistence <> 't' """
 
-    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
+    sql_indexes = """ SELECT c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -343,12 +343,18 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if args.tablename == None:
             if args.debug:
-                print("sql: " + cur.mogrify(sql, [o['oid'], args.min_size, args.min_wasted_size, args.min_wasted_percentage]))
-            cur.execute(sql, [o['oid'], args.min_size, args.min_wasted_size, args.min_wasted_percentage])
+                print("sql: " + cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+                                                    , args.min_size
+                                                    , args.min_wasted_size
+                                                    , args.min_wasted_percentage]))
+            cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+                                , args.min_size
+                                , args.min_wasted_size
+                                , args.min_wasted_percentage ])
         else:
             if args.debug:
-                print("sql: " + cur.mogrify(sql, [o['oid']]))
-            cur.execute(sql, [o['oid']])
+                print("sql: " + cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ]))
+            cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ])
 
         stats = cur.fetchall()
 
