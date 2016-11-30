@@ -1,3 +1,7 @@
+2.3.3
+- Fix all print syntax so script works in python 3.
+
+
 2.3.2
 - Do not rely on OID from pg_class to perform scanning operations anymore. Could possibly change mid-run without the object name changing and cause script failure.
 

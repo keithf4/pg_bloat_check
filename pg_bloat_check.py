@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.3.2"
+version = "2.3.3"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -509,7 +509,7 @@ def rebuild_index(conn):
             cur.execute(sql, [quoted_index])
             isconstraint = int(cur.fetchone()[0])
             if isconstraint == 1:
-                print "ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";"
+                print("ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";")
             else:
                 print("DROP INDEX CONCURRENTLY " + quoted_index + ";")
             # analyze again
@@ -517,7 +517,7 @@ def rebuild_index(conn):
             # rename temp index to original name
             print("ALTER INDEX \"" + i['schemaname'] + "\"." + temp_index_name + " RENAME TO \"" + i['objectname'] + "\";")
         elif i['objecttype'] == "index_pk":
-            print "ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";"
+            print("ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";")
             # analyze again
             print("ANALYZE " + quoted_table + ";")
             print("ALTER TABLE " + quoted_table + " ADD CONSTRAINT " + i['objectname'] + " PRIMARY KEY USING INDEX " + temp_index_name + ";")
