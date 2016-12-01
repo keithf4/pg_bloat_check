@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.3.3"
+version = "2.3.4"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -229,7 +229,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if args.mode == "both":
             if args.debug:
-                print("sql_class: " + cur.mogrify(sql_class, (filter_list,filter_list) ))
+                print("sql_class: " + str(cur.mogrify(sql_class, (filter_list,filter_list) )) )
             cur.execute(sql_class, (filter_list,filter_list))
         elif args.mode == "tables" or args.mode == "indexes":
             if args.debug:
@@ -343,10 +343,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if args.tablename == None:
             if args.debug:
-                print("sql: " + cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+                print("sql: " + str(cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
                                                     , args.min_size
                                                     , args.min_wasted_size
-                                                    , args.min_wasted_percentage]))
+                                                    , args.min_wasted_percentage])) )
             cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
                                 , args.min_size
                                 , args.min_wasted_size
@@ -412,7 +412,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                         , fillfactor)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) """
             if args.debug:
-                print("insert sql: " + cur.mogrify(sql, [     o['nspname']
+                print("insert sql: " + str(cur.mogrify(sql, [     o['nspname']
                                                             , o['relname']
                                                             , objecttype 
                                                             , stats[0]['table_len']
@@ -426,7 +426,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                                             , approximate
                                                             , relpages
                                                             , fillfactor
-                                                        ])) 
+                                                        ])) ) 
             cur.execute(sql, [   o['nspname']
                                , o['relname']
                                , objecttype
@@ -624,8 +624,10 @@ if __name__ == "__main__":
             sql += "bloat_indexes"
         else:
             sql += "bloat_stats"
+        sql += " WHERE (dead_tuple_size_bytes + (free_space_bytes - (relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) > %s "
+        sql += " AND (dead_tuple_percent + (free_percent - (100-fillfactor))) > %s "
         sql += " ORDER BY (dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) )) DESC"
-        cur.execute(sql)
+        cur.execute(sql, [args.min_wasted_size, args.min_wasted_percentage])
         result = cur.fetchall()
 
         for r in result:

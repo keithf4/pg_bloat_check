@@ -1,3 +1,8 @@
+2.3.4
+- Fixed script output to apply the fillfactor settings when any filtering options are set. Fillfactor was being accounted for in the text output values, but not in the actual calculation of the output, which caused objects to be output in the bloat list when they should not have been. 
+- Additional syntax fixes so debug output should work in python 3.
+
+
 2.3.3
 - Fix all print syntax so script works in python 3.
 
