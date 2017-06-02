@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.3.4"
+version = "2.3.5"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -49,30 +49,6 @@ def check_pgstattuple(conn):
             print("pgstattuple not found in the schema given by --pgstattuple_schema option: " + args.pgstattuple_schema + ". Found instead in: " + pgstattuple_info[1]+".")
             sys.exit(2)
     return pgstattuple_info[0]
-
-
-def check_pg_version(conn, min_version):
-    # Returns true if the current version is greater than or equal to the min version given
-    min_version = min_version.split(".")
-    sql = "SELECT current_setting('server_version')"
-    cur= conn.cursor()
-    cur.execute(sql)
-    current_version = cur.fetchone()[0].split(".")
-    if int(current_version[0]) > int(min_version[0]):
-        return True
-    if int(current_version[0]) == int(min_version[0]):
-        if current_version[1].isdigit():
-            if int(current_version[1]) > int(min_version[1]):
-                return True
-            if int(current_version[1]) == int(min_version[1]):
-                if int(current_version[2]) > int(min_version[2]):
-                    return True
-        else:
-            # If not a digit, means it's a test version and you're on your own if it fails
-            if args.debug:
-                print("Detected non-release version of PostgreSQL. All version checking disabled.")
-            return True
-    return False
 
 
 def create_conn():
@@ -193,7 +169,9 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     WHERE c.relkind = 'i' 
                     AND a.amname <> 'gin' AND a.amname <> 'brin' """
 
-    if check_pg_version(conn, "9.3.0"):
+
+    cur.execute("SELECT current_setting('server_version_num')::int >= 90300")
+    if cur.fetchone()[0] == True:
         sql_indexes += " AND indislive = 'true' "
 
     if args.tablename != None:
@@ -498,9 +476,15 @@ def rebuild_index(conn):
         index_def = re.sub(r' INDEX', ' INDEX CONCURRENTLY', index_def, 1)
         index_def = index_def.replace(i['objectname'], temp_index_name, 1)
         index_def += ";"
+        # check if index is clustered
+        sql = "SELECT indisclustered FROM pg_catalog.pg_index WHERE indexrelid::regclass = %s::regclass"
+        cur.execute(sql, [ quoted_index ] )
+        indisclustered = cur.fetchone()[0]
         # start output
         print("")
         print(index_def)
+        if indisclustered == True:
+            print("ALTER TABLE " + quoted_table + " CLUSTER ON " + temp_index_name) + ";"
         # analyze table
         print("ANALYZE " + quoted_table + ";")
         if i['objecttype'] == "index":
@@ -523,6 +507,11 @@ def rebuild_index(conn):
             print("ALTER TABLE " + quoted_table + " ADD CONSTRAINT " + i['objectname'] + " PRIMARY KEY USING INDEX " + temp_index_name + ";")
             # analyze again
             print("ANALYZE " + quoted_table + ";")
+        if indisclustered == True:
+            print("")
+            print("-- WARNING: The following statement will exclusively lock the table for the duration of its runtime.")
+            print("--   Uncomment it or manually run it to recluster the table on the newly created index.")
+            print("-- CLUSTER " + quoted_table + ";")
 
         print("")
 # end rebuild_index

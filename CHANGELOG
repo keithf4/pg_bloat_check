@@ -1,3 +1,8 @@
+2.3.5
+- Account for CLUSTER'ed indexes in the --rebuild_index output. If you'd previously used those generated commands, you may have lost the cluster attribute for that index. The commands output now properly account for this and will set the CLUSTER state on the given index without causing a long lock. However, the index does not have its data clustered yet. The command to actually cluster the data is given later, but commented out so it will not run automatically. This is to prevent an accidental, potentially very long exclusive lock on the table. You will have to manually run the CLUSTER command on the table to reorder your data. If you have a clustered index, it is highly recommended you look into altering the fillfactor storage attribute to reduce the chance that the clustering order is lost.
+- Simplified internal check for PostgreSQL version.
+
+
 2.3.4
 - Fixed script output to apply the fillfactor settings when any filtering options are set. Fillfactor was being accounted for in the text output values, but not in the actual calculation of the output, which caused objects to be output in the bloat list when they should not have been. 
 - Additional syntax fixes so debug output should work in python 3.
