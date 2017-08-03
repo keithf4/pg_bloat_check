@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.3.5"
+version = "2.4.0"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -98,7 +98,9 @@ def create_stats_table(conn):
 
     drop_sql = "DROP TABLE IF EXISTS " + parent_sql + " CASCADE"
 
-    sql = "CREATE TABLE " + parent_sql + """ (schemaname text NOT NULL
+    sql = "CREATE TABLE " + parent_sql + """ (
+                              oid oid NOT NULL
+                            , schemaname text NOT NULL
                             , objectname text NOT NULL
                             , objecttype text NOT NULL
                             , size_bytes bigint
@@ -155,13 +157,13 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     cur.execute(sql)
     block_size = int(cur.fetchone()[0])
 
-    sql_tables = """ SELECT c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
+    sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     WHERE relkind IN ('r', 'm')
                     AND c.relpersistence <> 't' """
 
-    sql_indexes = """ SELECT c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
+    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
@@ -256,11 +258,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if 'fillfactor' in reloptions_dict:
                 fillfactor = float(reloptions_dict['fillfactor'])
         
-        sql = """ SELECT count(*) FROM pg_catalog.pg_class c 
-                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid 
-                    WHERE n.nspname = %s
-                    AND c.relname = %s """
-        cur.execute(sql, [o['nspname'], o['relname']])
+        sql = """ SELECT count(*) FROM pg_catalog.pg_class WHERE oid = %s """
+        cur.execute(sql, [ o['oid'] ])
         exists = cur.fetchone()[0]
         if args.debug:
             print("Checking for table existance before scanning: " + str(exists))
@@ -276,8 +275,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                             FROM pg_catalog.pg_class c 
                             JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
                             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
-                            WHERE indexrelid::regclass = %s::regclass"""
-                cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ] )
+                            WHERE indexrelid = %s"""
+                cur.execute(sql, [ o['oid'] ] )
                 result = cur.fetchone()
                 quoted_table = "\"" + result[0] + "\".\"" + result[1] + "\""
 
@@ -321,18 +320,18 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if args.tablename == None:
             if args.debug:
-                print("sql: " + str(cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+                print("sql: " + str(cur.mogrify(sql, [ o['oid']
                                                     , args.min_size
                                                     , args.min_wasted_size
                                                     , args.min_wasted_percentage])) )
-            cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
+            cur.execute(sql, [ o['oid']
                                 , args.min_size
                                 , args.min_wasted_size
                                 , args.min_wasted_percentage ])
         else:
             if args.debug:
-                print("sql: " + cur.mogrify(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ]))
-            cur.execute(sql, [ "\"" + o['nspname'] + "\".\"" + o['relname'] + "\"" ])
+                print("sql: " + cur.mogrify(sql, [ o['oid'] ]))
+            cur.execute(sql, [ o['oid'] ])
 
         stats = cur.fetchall()
 
@@ -374,7 +373,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                 else:
                     objecttype = "index"
                 
-            sql += """ (schemaname
+            sql += """ (oid
+                        , schemaname
                         , objectname 
                         , objecttype
                         , size_bytes
@@ -388,9 +388,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                         , approximate
                         , relpages
                         , fillfactor)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) """
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) """
             if args.debug:
-                print("insert sql: " + str(cur.mogrify(sql, [     o['nspname']
+                print("insert sql: " + str(cur.mogrify(sql, [ o['oid']
+                                                            , o['nspname']
                                                             , o['relname']
                                                             , objecttype 
                                                             , stats[0]['table_len']
@@ -405,7 +406,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                                             , relpages
                                                             , fillfactor
                                                         ])) ) 
-            cur.execute(sql, [   o['nspname']
+            cur.execute(sql, [   o['oid'] 
+                               , o['nspname']
                                , o['relname']
                                , objecttype
                                , stats[0]['table_len']
@@ -449,7 +451,7 @@ def rebuild_index(conn):
     else:
         index_table = "bloat_indexes"
 
-    sql = "SELECT schemaname, objectname, objecttype FROM " + index_table + " ORDER BY 1,2,3"
+    sql = "SELECT oid, schemaname, objectname, objecttype FROM " + index_table + " ORDER BY 2,3,4"
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cur.execute(sql)
     result = cur.fetchall()
@@ -465,8 +467,8 @@ def rebuild_index(conn):
                     FROM pg_catalog.pg_class c 
                     JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
-                    WHERE indexrelid::regclass = %s::regclass"""
-        cur.execute(sql, [ quoted_index ] )
+                    WHERE indexrelid = %s"""
+        cur.execute(sql, [ i['oid'] ] )
         result = cur.fetchone()
         quoted_table = "\"" + result[0] + "\".\"" + result[1] + "\""
         # create temp index definition
@@ -477,8 +479,8 @@ def rebuild_index(conn):
         index_def = index_def.replace(i['objectname'], temp_index_name, 1)
         index_def += ";"
         # check if index is clustered
-        sql = "SELECT indisclustered FROM pg_catalog.pg_index WHERE indexrelid::regclass = %s::regclass"
-        cur.execute(sql, [ quoted_index ] )
+        sql = "SELECT indisclustered FROM pg_catalog.pg_index WHERE indexrelid = %s"
+        cur.execute(sql, [ i['oid'] ])
         indisclustered = cur.fetchone()[0]
         # start output
         print("")
@@ -489,8 +491,8 @@ def rebuild_index(conn):
         print("ANALYZE " + quoted_table + ";")
         if i['objecttype'] == "index":
             # drop old index or unique constraint
-            sql = "SELECT count(*) FROM pg_catalog.pg_constraint WHERE conindid::regclass = %s::regclass"
-            cur.execute(sql, [quoted_index])
+            sql = "SELECT count(*) FROM pg_catalog.pg_constraint WHERE conindid = %s"
+            cur.execute(sql, [ i['oid'] ])
             isconstraint = int(cur.fetchone()[0])
             if isconstraint == 1:
                 print("ALTER TABLE " + quoted_table + " DROP CONSTRAINT " + "\"" + i['objectname'] + "\";")
@@ -597,7 +599,7 @@ if __name__ == "__main__":
                             WHEN (dead_tuple_size_bytes + (free_space_bytes - (relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) < 0 THEN '0 bytes'
                             ELSE pg_size_pretty((dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) )::bigint)
                            END AS total_wasted_size"""
-        dict_cols = "schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate, relpages, fillfactor"
+        dict_cols = "oid, schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate, relpages, fillfactor"
         if args.format == "simple":
             sql = "SELECT " + simple_cols + " FROM "
         elif args.format == "dict" or args.format=="json" or args.format=="jsonpretty":
@@ -625,7 +627,8 @@ if __name__ == "__main__":
                 result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
                 counter += 1
             elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
-                result_dict = dict([('schemaname', r['schemaname'])
+                result_dict = dict([  ('oid', r['oid'])
+                                    , ('schemaname', r['schemaname'])
                                     , ('objectname', r['objectname'])
                                     , ('objecttype', r['objecttype'])
                                     , ('size_bytes', int(r['size_bytes']))

@@ -1,3 +1,7 @@
+2.4.0
+- Added oid column to the bloat_stats, bloat_tables and bloat_indexes tables. You will have to re-run --create_stats_table to recreate these tables in any database(s) this script is run against to include the new column. This makes it easier to use the values in the statistics tables in joins and functions and also simplifies script code.
+
+
 2.3.5
 - Account for CLUSTER'ed indexes in the --rebuild_index output. If you'd previously used those generated commands, you may have lost the cluster attribute for that index. The commands output now properly account for this and will set the CLUSTER state on the given index without causing a long lock. However, the index does not have its data clustered yet. The command to actually cluster the data is given later, but commented out so it will not run automatically. This is to prevent an accidental, potentially very long exclusive lock on the table. You will have to manually run the CLUSTER command on the table to reorder your data. If you have a clustered index, it is highly recommended you look into altering the fillfactor storage attribute to reduce the chance that the clustering order is lost.
 - Simplified internal check for PostgreSQL version.
