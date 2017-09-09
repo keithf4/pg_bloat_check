@@ -1,3 +1,7 @@
+2.4.1
+- Account for custom tablespace locations for indexes when using the --rebuild_index option to generate statements. If you use custom tablespace and used this option's generated SQL, please double-check that your indexes are in the correct tablespaces. CREATE INDEX does not automatically put the created index in the given table's tablespace unless it is the default or explicitly stated in the CREATE INDEX command. The generated statements now do this automatically for you if necessary.
+
+
 2.4.0
 - Added oid column to the bloat_stats, bloat_tables and bloat_indexes tables. You will have to re-run --create_stats_table to recreate these tables in any database(s) this script is run against to include the new column. This makes it easier to use the values in the statistics tables in joins and functions and also simplifies script code.
 

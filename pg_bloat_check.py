@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.4.0"
+version = "2.4.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -463,20 +463,27 @@ def rebuild_index(conn):
         temp_index_name = "pgbloatcheck_rebuild_" + str(randint(1000,9999))
         quoted_index = "\"" + i['schemaname'] + "\".\"" + i['objectname'] + "\""
         # get table index is in
-        sql = """SELECT n.nspname, c.relname
+        sql = """SELECT n.nspname, c.relname, t.spcname
                     FROM pg_catalog.pg_class c 
                     JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
                     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
+                    LEFT OUTER JOIN pg_catalog.pg_tablespace t ON c.reltablespace = t.oid
                     WHERE indexrelid = %s"""
         cur.execute(sql, [ i['oid'] ] )
         result = cur.fetchone()
         quoted_table = "\"" + result[0] + "\".\"" + result[1] + "\""
+        if result[2] != None:
+            quoted_tablespace = "\"" + result[2] + "\""
+        else:
+            quoted_tablespace = None
         # create temp index definition
         sql = "SELECT pg_get_indexdef(%s::regclass)"
         cur.execute(sql, [ "\"" + i['schemaname'] +"\".\""+ i['objectname'] + "\"" ])
         index_def = cur.fetchone()[0]
-        index_def = re.sub(r' INDEX', ' INDEX CONCURRENTLY', index_def, 1)
+        index_def = re.sub(r'CREATE INDEX', 'CREATE INDEX CONCURRENTLY', index_def, 1)
         index_def = index_def.replace(i['objectname'], temp_index_name, 1)
+        if quoted_tablespace != None:
+            index_def += " TABLESPACE " + quoted_tablespace
         index_def += ";"
         # check if index is clustered
         sql = "SELECT indisclustered FROM pg_catalog.pg_index WHERE indexrelid = %s"
