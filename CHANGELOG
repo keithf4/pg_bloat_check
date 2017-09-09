@@ -1,3 +1,7 @@
+2.4.2
+- Fix regression in 2.4.1 that stopped --rebuild_index option from adding CONCURRENTLY flag to unique index statements.
+
+
 2.4.1
 - Account for custom tablespace locations for indexes when using the --rebuild_index option to generate statements. If you use custom tablespace and used this option's generated SQL, please double-check that your indexes are in the correct tablespaces. CREATE INDEX does not automatically put the created index in the given table's tablespace unless it is the default or explicitly stated in the CREATE INDEX command. The generated statements now do this automatically for you if necessary.
 
