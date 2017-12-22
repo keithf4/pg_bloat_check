@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.4.2"
+version = "2.4.3"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -43,10 +43,12 @@ def check_pgstattuple(conn):
     pgstattuple_info = cur.fetchone()
     if pgstattuple_info == None:
         print("pgstattuple extension not found. Please ensure it is installed in the database this script is connecting to.")
+        close_conn(conn)
         sys.exit(2)
     if args.pgstattuple_schema != None:
         if args.pgstattuple_schema != pgstattuple_info[1]:
             print("pgstattuple not found in the schema given by --pgstattuple_schema option: " + args.pgstattuple_schema + ". Found instead in: " + pgstattuple_info[1]+".")
+            close_conn(conn)
             sys.exit(2)
     return pgstattuple_info[0]
 
@@ -455,9 +457,10 @@ def rebuild_index(conn):
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cur.execute(sql)
     result = cur.fetchall()
-    if result == None:
+    if result == []:
         print("Bloat statistics table contains no indexes.")
-        sys.exit(1)
+        close_conn(conn)
+        sys.exit(0)
     
     for i in result:
         temp_index_name = "pgbloatcheck_rebuild_" + str(randint(1000,9999))
@@ -529,7 +532,7 @@ def rebuild_index(conn):
 if __name__ == "__main__":
     if args.version:
         print_version()
-        sys.exit(1)
+        sys.exit(0)
 
     if args.schema != None and args.exclude_schema != None:
         print("--schema and --exclude_schema are exclusive options and cannot be set together")
@@ -541,9 +544,11 @@ if __name__ == "__main__":
     if args.quick:
         if pgstattuple_version < 1.3:
             print("--quick option requires pgstattuple version 1.3 or greater (PostgreSQL 9.5)")
+            close_conn(conn)
             sys.exit(2)
         if (args.mode == "indexes" or args.mode == "both"):
             print("--quick option can only be used with --mode=tables")
+            close_conn(conn)
             sys.exit(2)
 
 
@@ -552,7 +557,7 @@ if __name__ == "__main__":
     if args.create_stats_table:
         create_stats_table(conn)
         close_conn(conn)
-        sys.exit(1)
+        sys.exit(0)
 
     sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE tablename = %s"
     if args.bloat_schema != None:
@@ -563,12 +568,13 @@ if __name__ == "__main__":
     table_exists = cur.fetchone()
     if table_exists == None:
         print("Required statistics table does not exist. Please run --create_stats_table first before running a bloat scan.")
+        close_conn(conn)
         sys.exit(2)
 
     if args.rebuild_index:
         rebuild_index(conn)
         close_conn(conn)
-        sys.exit(1)
+        sys.exit(0)
 
     if args.exclude_schema != None:
         exclude_schema_list = create_list('csv', args.exclude_schema)
@@ -613,6 +619,7 @@ if __name__ == "__main__":
             sql = "SELECT " + dict_cols + " FROM "
         else:
             print("Unsupported --format given. Use 'simple', 'dict' 'json', or 'jsonpretty'.")
+            close_conn(conn)
             sys.exit(2)
         if args.bloat_schema != None:
             sql += args.bloat_schema + "."
@@ -662,18 +669,3 @@ if __name__ == "__main__":
                 print("No bloat found for given parameters")
 
     close_conn(conn)
-
-"""
-LICENSE AND COPYRIGHT
----------------------
-
-pg_bloat_check.py is released under the PostgreSQL License, a liberal Open Source license, similar to the BSD or MIT licenses.
-
-Copyright (c) 2017 OmniTI
-
-Permission to use, copy, modify, and distribute this software and its documentation for any purpose, without fee, and without a written agreement is hereby granted, provided that the above copyright notice and this paragraph and the following two paragraphs appear in all copies.
-
-IN NO EVENT SHALL THE AUTHOR BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE AUTHOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-THE AUTHOR SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND THE AUTHOR HAS NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
-"""
