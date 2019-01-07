@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.4.3"
+version = "2.5.0"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -23,6 +23,7 @@ args_general.add_argument('-q', '--quick', action="store_true", help="Use the pg
 args_general.add_argument('--quiet', action="store_true", help="Insert the data into the bloat stastics table without providing any console output.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before commiting inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
 args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index.")
+args_general.add_argument('--recovery_mode_norun', action="store_true", help="Setting this option will cause the script to check if the database it is running against is a replica (in recovery mode) and cause it to skip running. Otherwise if it is not in recovery, it will run as normal. This is useful for when you want to ensure the bloat check always runs only on the primary after failover without having to edit crontabs or similar process managers.")
 args_general.add_argument('-s', '--min_size', type=int, default=1, help="Minimum size in bytes of object to scan (table or index). Default and minimum value is 1.")
 args_general.add_argument('-t', '--tablename', help="Scan for bloat only on the given table. Must be schema qualified. This always gets both table and index bloat and overrides all other filter options so you always get the bloat statistics for the table no matter what they are.")
 args_general.add_argument('--version', action="store_true", help="Print version of this script.")
@@ -51,6 +52,15 @@ def check_pgstattuple(conn):
             close_conn(conn)
             sys.exit(2)
     return pgstattuple_info[0]
+
+
+def check_recovery_status(conn):
+    sql = "SELECT pg_is_in_recovery FROM pg_catalog.pg_is_in_recovery()"
+    cur = conn.cursor()
+    cur.execute(sql)
+    is_in_recovery = cur.fetchone()[0]
+    cur.close()
+    return is_in_recovery
 
 
 def create_conn():
@@ -539,6 +549,17 @@ if __name__ == "__main__":
         sys.exit(2)
 
     conn = create_conn()
+
+    if args.recovery_mode_norun == True:
+        is_in_recovery = check_recovery_status(conn)
+        if is_in_recovery == True:
+            if args.debug:
+                print("Recovery mode check found instance in recovery. Skipping run.")
+            close_conn(conn)
+            sys.exit(0)
+        else:
+            if args.debug:
+                print("Recovery mode check found primary instance. Running as normal.")
 
     pgstattuple_version = float(check_pgstattuple(conn))
     if args.quick:
