@@ -6,13 +6,13 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.5.0"
+version = "2.5.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
 args_general.add_argument('-c','--connection', default="host=", help="""Connection string for use by psycopg. Defaults to "host=" (local socket).""")
 args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a list of objects to exclude from the report (tables and/or indexes). Each line is a CSV entry in the format: objectname,bytes_wasted,percent_wasted. All objects must be schema qualified. bytes_wasted & percent_wasted are additional filter values on top of -s, -p, and -z to exclude the given object unless these values are also exceeded. Set either of these values to zero (or leave them off entirely) to exclude the object no matter what its bloat level. Comments are allowed if the line is prepended with "#". See the README.md for clearer examples of how to use this for more fine grained filtering.""")
-args_general.add_argument('-f', '--format', default="simple", choices=["simple", "json", "jsonpretty", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Json provides standardized json output which may be useful if taking input into something that needs a more structured format. Json also provides more details about dead tuples, empty space & free space. jsonpretty outputs in a more human readable format. Dict is the same as json but in the form of a python dictionary. Default is simple.")
+args_general.add_argument('-f', '--format', default="simple", choices=["simple", "json", "jsonpretty", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Object type is in parentheses (t=table, i=index, p=primary key). Json provides standardized json output which may be useful if taking input into something that needs a more structured format. Json also provides more details about dead tuples, empty space & free space. jsonpretty outputs in a more human readable format. Dict is the same as json but in the form of a python dictionary. Default is simple.")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
 args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
@@ -22,7 +22,7 @@ args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
 args_general.add_argument('--quiet', action="store_true", help="Insert the data into the bloat stastics table without providing any console output.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before commiting inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
-args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index.")
+args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index. All other filters used during a standard bloat check scan can be used with this option so you only get commands to run for objects relevant to your desired bloat thresholds.")
 args_general.add_argument('--recovery_mode_norun', action="store_true", help="Setting this option will cause the script to check if the database it is running against is a replica (in recovery mode) and cause it to skip running. Otherwise if it is not in recovery, it will run as normal. This is useful for when you want to ensure the bloat check always runs only on the primary after failover without having to edit crontabs or similar process managers.")
 args_general.add_argument('-s', '--min_size', type=int, default=1, help="Minimum size in bytes of object to scan (table or index). Default and minimum value is 1.")
 args_general.add_argument('-t', '--tablename', help="Scan for bloat only on the given table. Must be schema qualified. This always gets both table and index bloat and overrides all other filter options so you always get the bloat statistics for the table no matter what they are.")
@@ -457,22 +457,23 @@ def print_version():
     print("Version: " + version)
 
 
-def rebuild_index(conn):
-    if args.bloat_schema != None:
-        index_table = args.bloat_schema + "bloat_indexes"
-    else:
-        index_table = "bloat_indexes"
+def rebuild_index(conn, index_list):
+#    if args.bloat_schema != None:
+#        index_table = args.bloat_schema + "bloat_indexes"
+#    else:
+#        index_table = "bloat_indexes"
 
-    sql = "SELECT oid, schemaname, objectname, objecttype FROM " + index_table + " ORDER BY 2,3,4"
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cur.execute(sql)
-    result = cur.fetchall()
-    if result == []:
-        print("Bloat statistics table contains no indexes.")
+#    sql = "SELECT oid, schemaname, objectname, objecttype FROM " + index_table + " ORDER BY 2,3,4"
+#    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+#    cur.execute(sql)
+#    result = cur.fetchall()
+
+    if index_list == []:
+        print("Bloat statistics table contains no indexes for conditions given.")
         close_conn(conn)
         sys.exit(0)
     
-    for i in result:
+    for i in index_list:
         temp_index_name = "pgbloatcheck_rebuild_" + str(randint(1000,9999))
         quoted_index = "\"" + i['schemaname'] + "\".\"" + i['objectname'] + "\""
         # get table index is in
@@ -592,11 +593,6 @@ if __name__ == "__main__":
         close_conn(conn)
         sys.exit(2)
 
-    if args.rebuild_index:
-        rebuild_index(conn)
-        close_conn(conn)
-        sys.exit(0)
-
     if args.exclude_schema != None:
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
@@ -613,7 +609,7 @@ if __name__ == "__main__":
     else:
         exclude_object_list = []
 
-    if args.noscan == False:
+    if args.noscan == False and args.rebuild_index == False:
         get_bloat(conn, tuple(exclude_schema_list), tuple(include_schema_list), exclude_object_list)
 
     # Final commit to ensure transaction that inserted stats data closes
@@ -634,10 +630,11 @@ if __name__ == "__main__":
                             ELSE pg_size_pretty((dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) )::bigint)
                            END AS total_wasted_size"""
         dict_cols = "oid, schemaname, objectname, objecttype, size_bytes, live_tuple_count, live_tuple_percent, dead_tuple_count, dead_tuple_size_bytes, dead_tuple_percent, free_space_bytes, free_percent, approximate, relpages, fillfactor"
-        if args.format == "simple":
-            sql = "SELECT " + simple_cols + " FROM "
-        elif args.format == "dict" or args.format=="json" or args.format=="jsonpretty":
+        if args.format == "dict" or args.format=="json" or args.format=="jsonpretty" or args.rebuild_index:
+            # Since "simple" is the default, this check needs to be first so that if args.rebuild_index is set, the proper columns are chosen
             sql = "SELECT " + dict_cols + " FROM "
+        elif args.format == "simple":
+            sql = "SELECT " + simple_cols + " FROM "
         else:
             print("Unsupported --format given. Use 'simple', 'dict' 'json', or 'jsonpretty'.")
             close_conn(conn)
@@ -646,7 +643,7 @@ if __name__ == "__main__":
             sql += args.bloat_schema + "."
         if args.mode == "tables":
             sql += "bloat_tables"
-        elif args.mode == "indexes":
+        elif args.mode == "indexes" or args.rebuild_index:
             sql += "bloat_indexes"
         else:
             sql += "bloat_stats"
@@ -656,10 +653,26 @@ if __name__ == "__main__":
         cur.execute(sql, [args.min_wasted_size, args.min_wasted_percentage])
         result = cur.fetchall()
 
+        # Output rebuild commmands instead of status report
+        if args.rebuild_index:
+            rebuild_index(conn, result)
+            close_conn(conn)
+            sys.exit(0)
+
         for r in result:
             if args.format == "simple":
-                justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
-                result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
+                if r['objecttype'] == 'table':
+                    type_label = 't'
+                elif r['objecttype'] == 'index':
+                    type_label = 'i'
+                elif r['objecttype'] == 'index_pk':
+                    type_label = 'p'
+                else:
+                    print("Unexpected object type encountered in stats table. Please report this bug to author with value found: " + str(r['objectttype']))
+                    sys.exit(2)
+
+                justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
+                result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
                 counter += 1
             elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
                 result_dict = dict([  ('oid', r['oid'])

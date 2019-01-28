@@ -1,3 +1,8 @@
+2.5.1
+- Allow the --rebuild_index option to honor all other filters so you only get rebuilding commands that are relevant to your desired bloat thresholds. Output of commands is now also given in wasted space order (similar to simple output list) starting with the largest.
+- Added labels to the simple output to more clearly identify the object type (i=index, t=table, p=primary key).
+
+
 2.5.0
 - Added --recovery_mode_norun option. This allows the same crontab entry to be entered on all systems in a failover cluster and ensure the bloat check is always only run on whichever system is the primary.
 
