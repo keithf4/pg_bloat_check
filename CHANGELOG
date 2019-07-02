@@ -1,3 +1,10 @@
+2.6.0
+- Modified --quiet option to allow setting multiple times to suppress different levels of non-error output.
+    - Setting once will cause console output to only be given if bloat is actually found (supresses "no bloat found" message).
+    - Setting two or more times will suppress all console output, even if bloat is found. Resulting data is only stored in stats tables. Setting value more than twice has no additional affects.
+    - Added shorthand option to --quiet as -u to allow setting multiple times easier. Can do "--quiet --quiet", "-u -u", or "-uu". -q already taken by --quick and did not want to break backward compatability.
+
+
 2.5.1
 - Allow the --rebuild_index option to honor all other filters so you only get rebuilding commands that are relevant to your desired bloat thresholds. Output of commands is now also given in wasted space order (similar to simple output list) starting with the largest.
 - Added labels to the simple output to more clearly identify the object type (i=index, t=table, p=primary key).
