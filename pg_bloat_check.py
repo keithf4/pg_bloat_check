@@ -29,6 +29,7 @@ args_general.add_argument('-t', '--tablename', help="Scan for bloat only on the 
 args_general.add_argument('--version', action="store_true", help="Print version of this script.")
 args_general.add_argument('-z', '--min_wasted_size', type=int, default=1, help="Minimum size of wasted space in bytes. Default and minimum is 1.")
 args_general.add_argument('--debug', action="store_true", help="Output additional debugging information. Overrides quiet option.")
+args_general.add_argument('--include-toast', action="store_true", help="Include toast tables")
 
 args_setup = parser.add_argument_group(title="Setup")
 args_setup.add_argument('--pgstattuple_schema', help="If pgstattuple is not installed in the default search path, use this option to designate the schema where it is installed.")
@@ -172,15 +173,15 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
-                    WHERE relkind IN ('r', 'm')
+                    WHERE relkind IN ('r', 'm', 't')
                     AND c.relpersistence <> 't' """
 
-    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
+    sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     JOIN pg_catalog.pg_index i ON c.oid = i.indexrelid
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
-                    WHERE c.relkind = 'i' 
+                    WHERE c.relkind = 'i'
                     AND a.amname <> 'gin' AND a.amname <> 'brin' """
 
 
@@ -193,7 +194,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         sql_indexes += " AND i.indrelid::regclass = %s::regclass "
 
         sql_class = sql_tables + """
-                    UNION 
+                    UNION
                     """ + sql_indexes
 
         if args.debug:
@@ -209,6 +210,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             sql_tables += " AND n.nspname NOT IN %s"
             sql_indexes += " AND n.nspname NOT IN %s"
             filter_list = exclude_schema_list
+        else:
+            filter_list = ''
 
         if args.mode == 'tables':
             sql_class = sql_tables
@@ -216,7 +219,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             sql_class = sql_indexes
         elif args.mode == "both":
             sql_class = sql_tables + """
-                    UNION 
+                    UNION
                     """ + sql_indexes
 
         if args.mode == "both":
@@ -260,7 +263,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if match_found:
                 continue
 
-        if o['relkind'] == "i": 
+        if o['relkind'] == "i":
             fillfactor = 90.0
         else:
             fillfactor = 100.0
@@ -269,7 +272,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             reloptions_dict = dict(o.split('=') for o in o['reloptions'])
             if 'fillfactor' in reloptions_dict:
                 fillfactor = float(reloptions_dict['fillfactor'])
-        
+
         sql = """ SELECT count(*) FROM pg_catalog.pg_class WHERE oid = %s """
         cur.execute(sql, [ o['oid'] ])
         exists = cur.fetchone()[0]
@@ -279,14 +282,14 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             continue  # just skip over it. object was dropped since initial list was made
 
         if args.noanalyze != True:
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 quoted_table = "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
             else:
                 # get table that index is a part of
                 sql = """SELECT n.nspname, c.relname
-                            FROM pg_catalog.pg_class c 
-                            JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
-                            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
+                            FROM pg_catalog.pg_class c
+                            JOIN pg_catalog.pg_index i ON c.oid = i.indrelid
+                            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                             WHERE indexrelid = %s"""
                 cur.execute(sql, [ o['oid'] ] )
                 result = cur.fetchone()
@@ -305,8 +308,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                 analyzed_tables.append(quoted_table)
         # end noanalyze check
 
-        sql = """ SELECT c.relpages FROM pg_catalog.pg_class c 
-                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid 
+        sql = """ SELECT c.relpages FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
                     WHERE n.nspname = %s
                     AND c.relname = %s """
         cur.execute(sql, [o['nspname'], o['relname']])
@@ -352,7 +355,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
 
         if stats: # completely empty objects will be zero for all stats, so this would be an empty set
 
-            # determine byte size of fillfactor pages 
+            # determine byte size of fillfactor pages
             ff_relpages_size = (relpages - ( fillfactor/100 * relpages ) ) * block_size
 
             if exclude_object_list and args.tablename == None:
@@ -372,9 +375,9 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.bloat_schema != None:
                 sql += args.bloat_schema + "."
 
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 sql+= "bloat_tables"
-                if o['relkind'] == "r":
+                if o['relkind'] == "r" or o['relkind'] == "t":
                     objecttype = "table"
                 else:
                     objecttype = "materialized_view"
@@ -384,10 +387,10 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     objecttype = "index_pk"
                 else:
                     objecttype = "index"
-                
+
             sql += """ (oid
                         , schemaname
-                        , objectname 
+                        , objectname
                         , objecttype
                         , size_bytes
                         , live_tuple_count
@@ -405,7 +408,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                 print("insert sql: " + str(cur.mogrify(sql, [ o['oid']
                                                             , o['nspname']
                                                             , o['relname']
-                                                            , objecttype 
+                                                            , objecttype
                                                             , stats[0]['table_len']
                                                             , stats[0]['tuple_count']
                                                             , stats[0]['tuple_percent']
@@ -417,8 +420,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                                             , approximate
                                                             , relpages
                                                             , fillfactor
-                                                        ])) ) 
-            cur.execute(sql, [   o['oid'] 
+                                                        ])) )
+            cur.execute(sql, [   o['oid']
                                , o['nspname']
                                , o['relname']
                                , objecttype
@@ -433,7 +436,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                , approximate
                                , relpages
                                , fillfactor
-                             ]) 
+                             ])
 
         commit_counter += 1
         if args.commit_rate > 0 and (commit_counter % args.commit_rate == 0):
@@ -442,7 +445,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             conn.commit()
     conn.commit()
     cur.close()
-## end get_bloat()            
+## end get_bloat()
 
 
 def print_report(result_list):
@@ -463,15 +466,15 @@ def rebuild_index(conn, index_list):
         print("Bloat statistics table contains no indexes for conditions given.")
         close_conn(conn)
         sys.exit(0)
-    
+
     for i in index_list:
         temp_index_name = "pgbloatcheck_rebuild_" + str(randint(1000,9999))
         quoted_index = "\"" + i['schemaname'] + "\".\"" + i['objectname'] + "\""
         # get table index is in
         sql = """SELECT n.nspname, c.relname, t.spcname
-                    FROM pg_catalog.pg_class c 
-                    JOIN pg_catalog.pg_index i ON c.oid = i.indrelid 
-                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace 
+                    FROM pg_catalog.pg_class c
+                    JOIN pg_catalog.pg_index i ON c.oid = i.indrelid
+                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                     LEFT OUTER JOIN pg_catalog.pg_tablespace t ON c.reltablespace = t.oid
                     WHERE indexrelid = %s"""
         cur.execute(sql, [ i['oid'] ] )
@@ -591,7 +594,9 @@ if __name__ == "__main__":
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
         exclude_schema_list = []
-    exclude_schema_list.append('pg_toast')
+
+    if not args.include_toast:
+        exclude_schema_list.append('pg_toast')
 
     if args.schema != None:
         include_schema_list = create_list('csv', args.schema)
@@ -615,7 +620,7 @@ if __name__ == "__main__":
         simple_cols = """schemaname
                          , objectname
                          , objecttype
-                         , CASE 
+                         , CASE
                             WHEN (dead_tuple_percent + (free_percent - (100-fillfactor))) < 0 THEN 0
                             ELSE (dead_tuple_percent + (free_percent - (100-fillfactor)))
                            END AS total_waste_percent
@@ -678,9 +683,9 @@ if __name__ == "__main__":
                                     , ('live_tuple_percent', str(r['live_tuple_percent'])+"%" )
                                     , ('dead_tuple_count', int(r['dead_tuple_count']))
                                     , ('dead_tuple_size_bytes', int(r['dead_tuple_size_bytes']))
-                                    , ('dead_tuple_percent', str(r['dead_tuple_percent'])+"%" ) 
+                                    , ('dead_tuple_percent', str(r['dead_tuple_percent'])+"%" )
                                     , ('free_space_bytes', int(r['free_space_bytes']))
-                                    , ('free_percent', str(r['free_percent'])+"%" ) 
+                                    , ('free_percent', str(r['free_percent'])+"%" )
                                     , ('approximate', r['approximate'])
                                    ])
                 result_list.append(result_dict)
@@ -689,7 +694,7 @@ if __name__ == "__main__":
             result_list = json.dumps(result_list)
         elif args.format == "jsonpretty":
             result_list = json.dumps(result_list, indent=4, separators=(',',': '))
-    
+
         if len(result_list) >= 1:
             print_report(result_list)
         else:
