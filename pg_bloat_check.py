@@ -595,7 +595,6 @@ if __name__ == "__main__":
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
         exclude_schema_list = []
-#    exclude_schema_list.append('pg_toast')
 
     if args.schema != None:
         include_schema_list = create_list('csv', args.schema)
