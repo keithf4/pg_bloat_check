@@ -20,7 +20,7 @@ args_general.add_argument('--noanalyze', action="store_true", help="To ensure ac
 args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1 (DO NOT include percent sign in given value).")
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
-args_general.add_argument('-u', '--quiet', action="count", help="Suppress console output but still insert data into the bloat stastics table. This option can be set several times. Setting once will suppress all non-error console output if no bloat is found, but still output when it is found for given parameter settings. Setting it twice will suppress all console output, even if bloat is found.")
+args_general.add_argument('-u', '--quiet', default=0, action="count", help="Suppress console output but still insert data into the bloat stastics table. This option can be set several times. Setting once will suppress all non-error console output if no bloat is found, but still output when it is found for given parameter settings. Setting it twice will suppress all console output, even if bloat is found.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before commiting inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
 args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index. All other filters used during a standard bloat check scan can be used with this option so you only get commands to run for objects relevant to your desired bloat thresholds.")
 args_general.add_argument('--recovery_mode_norun', action="store_true", help="Setting this option will cause the script to check if the database it is running against is a replica (in recovery mode) and cause it to skip running. Otherwise if it is not in recovery, it will run as normal. This is useful for when you want to ensure the bloat check always runs only on the primary after failover without having to edit crontabs or similar process managers.")
@@ -615,8 +615,9 @@ if __name__ == "__main__":
 
     counter = 1
     result_list = []
-    if args.quiet <= 1 or args.quiet == None or args.debug == True:
-        simple_cols = """schemaname
+    if args.quiet <= 1 or args.debug == True:
+        simple_cols = """oid
+                         , schemaname
                          , objectname
                          , objecttype
                          , CASE 
@@ -670,7 +671,21 @@ if __name__ == "__main__":
                     sys.exit(2)
 
                 justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
-                result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
+
+                output_line = str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted"
+
+                if r['objecttype'] == 'toast_table':
+                    toast_real_sql = """ SELECT n.nspname||'.'||c.relname 
+                                         FROM pg_catalog.pg_class c
+                                         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                                         WHERE reltoastrelid = %s """
+                    if args.debug:
+                        print( "toast_real_sql: " + str(cur.mogrify(sql, [r['oid']]) ) )
+                    cur.execute(toast_real_sql, [r['oid']])
+                    real_table = cur.fetchone()[0]
+                    output_line = output_line + "\n      Real table: " + str(real_table)
+
+                result_list.append(output_line)
                 counter += 1
 
             elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
@@ -698,7 +713,7 @@ if __name__ == "__main__":
         if len(result_list) >= 1:
             print_report(result_list)
         else:
-            if args.quiet == 0 or args.quiet == None:
+            if args.quiet == 0:
                 print("No bloat found for given parameters")
 
     close_conn(conn)
