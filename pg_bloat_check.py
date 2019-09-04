@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.6.0"
+version = "2.6.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -172,7 +172,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
-                    WHERE relkind IN ('r', 'm')
+                    WHERE relkind IN ('r', 'm', 't')
                     AND c.relpersistence <> 't' """
 
     sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
@@ -209,6 +209,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             sql_tables += " AND n.nspname NOT IN %s"
             sql_indexes += " AND n.nspname NOT IN %s"
             filter_list = exclude_schema_list
+        else:
+            filter_list = ""
 
         if args.mode == 'tables':
             sql_class = sql_tables
@@ -279,7 +281,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             continue  # just skip over it. object was dropped since initial list was made
 
         if args.noanalyze != True:
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 quoted_table = "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
             else:
                 # get table that index is a part of
@@ -372,10 +374,12 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.bloat_schema != None:
                 sql += args.bloat_schema + "."
 
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 sql+= "bloat_tables"
                 if o['relkind'] == "r":
                     objecttype = "table"
+                elif o['relkind'] == "t":
+                    objecttype = "toast_table"
                 else:
                     objecttype = "materialized_view"
             elif o['relkind'] == "i":
@@ -591,7 +595,7 @@ if __name__ == "__main__":
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
         exclude_schema_list = []
-    exclude_schema_list.append('pg_toast')
+#    exclude_schema_list.append('pg_toast')
 
     if args.schema != None:
         include_schema_list = create_list('csv', args.schema)
@@ -655,7 +659,7 @@ if __name__ == "__main__":
 
         for r in result:
             if args.format == "simple":
-                if r['objecttype'] == 'table':
+                if r['objecttype'] == 'table' or r['objecttype'] == 'toast_table':
                     type_label = 't'
                 elif r['objecttype'] == 'index':
                     type_label = 'i'
@@ -668,6 +672,7 @@ if __name__ == "__main__":
                 justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
                 result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
                 counter += 1
+
             elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
                 result_dict = dict([  ('oid', r['oid'])
                                     , ('schemaname', r['schemaname'])

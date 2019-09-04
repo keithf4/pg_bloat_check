@@ -1,3 +1,7 @@
+2.6.1
+- Ensure TOAST tables are included in results. By default, pgstattuple does not include the underlying TOAST table for a relation. TOAST tables are now scanned as separate objects because their bloat status can vary widely from the main table. However, fixing TOAST bloat must be done through the main table.
+
+
 2.6.0
 - Modified --quiet option to allow setting multiple times to suppress different levels of non-error output.
     - Setting once will cause console output to only be given if bloat is actually found (supresses "no bloat found" message).
