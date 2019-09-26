@@ -172,7 +172,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     sql_tables = """ SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
                     FROM pg_catalog.pg_class c
                     JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
-                    WHERE relkind IN ('r', 'm', 't')
+                    WHERE relkind IN ('r', 'm')
                     AND c.relpersistence <> 't' """
 
     sql_indexes = """ SELECT c.oid, c.relkind, c.relname, n.nspname, i.indisprimary, c.reloptions 
@@ -232,7 +232,35 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         else:
             cur.execute(sql)
 
-    object_list = cur.fetchall()
+    object_list_no_toast = cur.fetchall()
+
+    # Gather associated toast tables after generating above list so that only toast tables relevant
+    # to either schema or table filtering are gathered
+    object_list_with_toast = []
+    for o in object_list_no_toast:
+        # Add existing objects to new list
+        object_list_with_toast.append(o)
+
+        if o['relkind'] == 'r' or o['relkind'] == 'm':
+            # only run for tables or mat views to speed things up
+            # Note tables without a toast table have the value 0 for reltoastrelid, not NULL
+            sql_toast = """  WITH toast_data AS (
+                            SELECT reltoastrelid FROM pg_class WHERE oid = %s AND reltoastrelid != 0
+                        )
+                        SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
+                        FROM pg_catalog.pg_class c
+                        JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+                        JOIN toast_data ON c.oid = toast_data.reltoastrelid
+                        AND c.relpersistence <> 't' """
+            cur.execute(sql_toast, [ o['oid'] ])
+            # Add new toast table to list if one exists for given table
+            result = cur.fetchone()
+            if result != None: 
+                object_list_with_toast.append(result)
+
+    if args.debug:
+        for o in object_list_with_toast:
+            print("object_list_with_toast: " + str(o))
 
     sql = "TRUNCATE "
     if args.bloat_schema:
@@ -250,9 +278,9 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     else:
         approximate = False
 
-    for o in object_list:
+    for o in object_list_with_toast:
         if args.debug:
-            print(o)
+            print("begining of object list loop: " + str(o))
         if exclude_object_list and args.tablename == None:
             # completely skip object being scanned if it's in the excluded file list with max values equal to zero
             match_found = False
