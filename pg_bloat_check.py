@@ -14,7 +14,7 @@ args_general.add_argument('-c','--connection', default="host=", help="""Connecti
 args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a list of objects to exclude from the report (tables and/or indexes). Each line is a CSV entry in the format: objectname,bytes_wasted,percent_wasted. All objects must be schema qualified. bytes_wasted & percent_wasted are additional filter values on top of -s, -p, and -z to exclude the given object unless these values are also exceeded. Set either of these values to zero (or leave them off entirely) to exclude the object no matter what its bloat level. Comments are allowed if the line is prepended with "#". See the README.md for clearer examples of how to use this for more fine grained filtering.""")
 args_general.add_argument('-f', '--format', default="simple", choices=["simple", "json", "jsonpretty", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Object type is in parentheses (t=table, i=index, p=primary key). Json provides standardized json output which may be useful if taking input into something that needs a more structured format. Json also provides more details about dead tuples, empty space & free space. jsonpretty outputs in a more human readable format. Dict is the same as json but in the form of a python dictionary. Default is simple.")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
-args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
+args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. pg_catalog schema is always included. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
 args_general.add_argument('--noanalyze', action="store_true", help="To ensure accurate fillfactor statistics, an analyze if each object being scanned is done before the check for bloat. Set this to skip the analyze step and reduce overall runtime, however your bloat statistics may not be as accurate.")
 args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
@@ -626,6 +626,8 @@ if __name__ == "__main__":
 
     if args.schema != None:
         include_schema_list = create_list('csv', args.schema)
+        # Always include pg_catalog even when user specifies their own list
+        include_schema_list.append('pg_catalog')
     else:
         include_schema_list = []
 

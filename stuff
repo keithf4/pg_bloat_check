@@ -1,0 +1,1 @@
+--schema and --exclude_schema are exclusive options and cannot be set together
