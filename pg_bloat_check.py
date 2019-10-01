@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.6.0"
+version = "2.6.1"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -14,13 +14,13 @@ args_general.add_argument('-c','--connection', default="host=", help="""Connecti
 args_general.add_argument('-e', '--exclude_object_file', help="""Full path to file containing a list of objects to exclude from the report (tables and/or indexes). Each line is a CSV entry in the format: objectname,bytes_wasted,percent_wasted. All objects must be schema qualified. bytes_wasted & percent_wasted are additional filter values on top of -s, -p, and -z to exclude the given object unless these values are also exceeded. Set either of these values to zero (or leave them off entirely) to exclude the object no matter what its bloat level. Comments are allowed if the line is prepended with "#". See the README.md for clearer examples of how to use this for more fine grained filtering.""")
 args_general.add_argument('-f', '--format', default="simple", choices=["simple", "json", "jsonpretty", "dict"], help="Output formats. Simple is a plaintext version suitable for any output (ex: console, pipe to email). Object type is in parentheses (t=table, i=index, p=primary key). Json provides standardized json output which may be useful if taking input into something that needs a more structured format. Json also provides more details about dead tuples, empty space & free space. jsonpretty outputs in a more human readable format. Dict is the same as json but in the form of a python dictionary. Default is simple.")
 args_general.add_argument('-m', '--mode', choices=["tables", "indexes", "both"], default="both", help="""Provide bloat reports for tables, indexes or both. Index bloat is always distinct from table bloat and reported as separate entries in the report. Default is "both". NOTE: GIN indexes are not supported at this time and will be skipped.""")
-args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. All other schemas will be ignored.")
+args_general.add_argument('-n', '--schema', help="Comma separated list of schema to include in report. pg_catalog schema is always included. All other schemas will be ignored.")
 args_general.add_argument('-N', '--exclude_schema', help="Comma separated list of schemas to exclude.")
 args_general.add_argument('--noanalyze', action="store_true", help="To ensure accurate fillfactor statistics, an analyze if each object being scanned is done before the check for bloat. Set this to skip the analyze step and reduce overall runtime, however your bloat statistics may not be as accurate.")
 args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1 (DO NOT include percent sign in given value).")
 args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
-args_general.add_argument('-u', '--quiet', action="count", help="Suppress console output but still insert data into the bloat stastics table. This option can be set several times. Setting once will suppress all non-error console output if no bloat is found, but still output when it is found for given parameter settings. Setting it twice will suppress all console output, even if bloat is found.")
+args_general.add_argument('-u', '--quiet', default=0, action="count", help="Suppress console output but still insert data into the bloat stastics table. This option can be set several times. Setting once will suppress all non-error console output if no bloat is found, but still output when it is found for given parameter settings. Setting it twice will suppress all console output, even if bloat is found.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before commiting inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
 args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index. All other filters used during a standard bloat check scan can be used with this option so you only get commands to run for objects relevant to your desired bloat thresholds.")
 args_general.add_argument('--recovery_mode_norun', action="store_true", help="Setting this option will cause the script to check if the database it is running against is a replica (in recovery mode) and cause it to skip running. Otherwise if it is not in recovery, it will run as normal. This is useful for when you want to ensure the bloat check always runs only on the primary after failover without having to edit crontabs or similar process managers.")
@@ -209,6 +209,8 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             sql_tables += " AND n.nspname NOT IN %s"
             sql_indexes += " AND n.nspname NOT IN %s"
             filter_list = exclude_schema_list
+        else:
+            filter_list = ""
 
         if args.mode == 'tables':
             sql_class = sql_tables
@@ -230,7 +232,35 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         else:
             cur.execute(sql)
 
-    object_list = cur.fetchall()
+    object_list_no_toast = cur.fetchall()
+
+    # Gather associated toast tables after generating above list so that only toast tables relevant
+    # to either schema or table filtering are gathered
+    object_list_with_toast = []
+    for o in object_list_no_toast:
+        # Add existing objects to new list
+        object_list_with_toast.append(o)
+
+        if o['relkind'] == 'r' or o['relkind'] == 'm':
+            # only run for tables or mat views to speed things up
+            # Note tables without a toast table have the value 0 for reltoastrelid, not NULL
+            sql_toast = """  WITH toast_data AS (
+                            SELECT reltoastrelid FROM pg_class WHERE oid = %s AND reltoastrelid != 0
+                        )
+                        SELECT c.oid, c.relkind, c.relname, n.nspname, 'false' as indisprimary, c.reloptions
+                        FROM pg_catalog.pg_class c
+                        JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+                        JOIN toast_data ON c.oid = toast_data.reltoastrelid
+                        AND c.relpersistence <> 't' """
+            cur.execute(sql_toast, [ o['oid'] ])
+            # Add new toast table to list if one exists for given table
+            result = cur.fetchone()
+            if result != None: 
+                object_list_with_toast.append(result)
+
+    if args.debug:
+        for o in object_list_with_toast:
+            print("object_list_with_toast: " + str(o))
 
     sql = "TRUNCATE "
     if args.bloat_schema:
@@ -248,9 +278,9 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
     else:
         approximate = False
 
-    for o in object_list:
+    for o in object_list_with_toast:
         if args.debug:
-            print(o)
+            print("begining of object list loop: " + str(o))
         if exclude_object_list and args.tablename == None:
             # completely skip object being scanned if it's in the excluded file list with max values equal to zero
             match_found = False
@@ -279,7 +309,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             continue  # just skip over it. object was dropped since initial list was made
 
         if args.noanalyze != True:
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 quoted_table = "\"" + o['nspname'] + "\".\"" + o['relname'] + "\""
             else:
                 # get table that index is a part of
@@ -372,10 +402,12 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             if args.bloat_schema != None:
                 sql += args.bloat_schema + "."
 
-            if o['relkind'] == "r" or o['relkind'] == "m":
+            if o['relkind'] == "r" or o['relkind'] == "m" or o['relkind'] == "t":
                 sql+= "bloat_tables"
                 if o['relkind'] == "r":
                     objecttype = "table"
+                elif o['relkind'] == "t":
+                    objecttype = "toast_table"
                 else:
                     objecttype = "materialized_view"
             elif o['relkind'] == "i":
@@ -591,10 +623,11 @@ if __name__ == "__main__":
         exclude_schema_list = create_list('csv', args.exclude_schema)
     else:
         exclude_schema_list = []
-    exclude_schema_list.append('pg_toast')
 
     if args.schema != None:
         include_schema_list = create_list('csv', args.schema)
+        # Always include pg_catalog even when user specifies their own list
+        include_schema_list.append('pg_catalog')
     else:
         include_schema_list = []
 
@@ -611,8 +644,9 @@ if __name__ == "__main__":
 
     counter = 1
     result_list = []
-    if args.quiet <= 1 or args.quiet == None or args.debug == True:
-        simple_cols = """schemaname
+    if args.quiet <= 1 or args.debug == True:
+        simple_cols = """oid
+                         , schemaname
                          , objectname
                          , objecttype
                          , CASE 
@@ -655,7 +689,7 @@ if __name__ == "__main__":
 
         for r in result:
             if args.format == "simple":
-                if r['objecttype'] == 'table':
+                if r['objecttype'] == 'table' or r['objecttype'] == 'toast_table':
                     type_label = 't'
                 elif r['objecttype'] == 'index':
                     type_label = 'i'
@@ -666,8 +700,23 @@ if __name__ == "__main__":
                     sys.exit(2)
 
                 justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
-                result_list.append(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted")
+
+                output_line = str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted"
+
+                if r['objecttype'] == 'toast_table':
+                    toast_real_sql = """ SELECT n.nspname||'.'||c.relname 
+                                         FROM pg_catalog.pg_class c
+                                         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                                         WHERE reltoastrelid = %s """
+                    if args.debug:
+                        print( "toast_real_sql: " + str(cur.mogrify(sql, [r['oid']]) ) )
+                    cur.execute(toast_real_sql, [r['oid']])
+                    real_table = cur.fetchone()[0]
+                    output_line = output_line + "\n      Real table: " + str(real_table)
+
+                result_list.append(output_line)
                 counter += 1
+
             elif args.format == "dict" or args.format == "json" or args.format == "jsonpretty":
                 result_dict = dict([  ('oid', r['oid'])
                                     , ('schemaname', r['schemaname'])
@@ -693,7 +742,7 @@ if __name__ == "__main__":
         if len(result_list) >= 1:
             print_report(result_list)
         else:
-            if args.quiet == 0 or args.quiet == None:
+            if args.quiet == 0:
                 print("No bloat found for given parameters")
 
     close_conn(conn)

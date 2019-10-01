@@ -1,3 +1,13 @@
+2.6.1
+- Ensure TOAST tables are included in results. By default, pgstattuple does not include the underlying TOAST table for a relation. TOAST tables are now scanned as separate objects because their bloat status can vary widely from the main table. However, fixing TOAST bloat must be done through the main table. Many thanks to @jpuris on Github for reporting this issue and helping to test (Github Issue #15).
+    - "simple" output will also output the toast table's associated real table.
+    - Did not include associated real table in statistics table since a toast table could change any time a table is rewritten 
+        and make the stored stats data invalid. It's better to dynamically look up a toast table's real table at the time the 
+        data is queried (pg_class.reltoastrelid). This is what simple output does.
+- Always include pg_catalog schema when the the --schema filter option is used.
+- Fix python 3 compatibility around using --quiet option.
+
+
 2.6.0
 - Modified --quiet option to allow setting multiple times to suppress different levels of non-error output.
     - Setting once will cause console output to only be given if bloat is actually found (supresses "no bloat found" message).
