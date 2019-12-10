@@ -1,3 +1,7 @@
+2.6.2
+- Ensure that temporary indexes are skipped. Thanks to @EricVeldhuyzen on Github for reporting issue with a fix (Github Issue #2).
+
+
 2.6.1
 - Ensure TOAST tables are included in results. By default, pgstattuple does not include the underlying TOAST table for a relation. TOAST tables are now scanned as separate objects because their bloat status can vary widely from the main table. However, fixing TOAST bloat must be done through the main table. Many thanks to @jpuris on Github for reporting this issue and helping to test (Github Issue #15).
     - "simple" output will also output the toast table's associated real table.
