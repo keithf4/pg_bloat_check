@@ -1,3 +1,7 @@
+2.6.4
+- Grammar fixes
+
+
 2.6.3
 - Fixed bug that caused script to fail when it encounters materialized views. Introduced in v2.5.1 when labels were added to the simple output. Added new label (mv) for materialized views. Thanks to @DHorneDBA on Github for reporting the issue. (Github Issue #19)
 
