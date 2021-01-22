@@ -565,6 +565,10 @@ def rebuild_index(conn, index_list):
 
 def convert_to_bytes(val):
 
+   # immediately return if val is a number
+   if val.isdigit():
+       return val
+
    # split numbers from unit descriptor
    match = re.search(r'^([0-9]+)([a-zA-Z]+)?',val)
 
