@@ -566,24 +566,34 @@ def rebuild_index(conn, index_list):
 def convert_to_bytes(val):
 
    # immediately return if val is a number
+   # (i.e., no units were provided)
    if val.isdigit():
        return val
 
    # split numbers from unit descriptor
+   # we assume format is "####kb" or "#### MB" etc.
+   # we assume there are no spaces between number
+   # and units
    match = re.search(r'^([0-9]+)([a-zA-Z]+)?',val)
 
    if match:
      num = int(match.group(1))
-     unit = match.group(2).lower()
+     unit = match.group(2)
 
      if args.debug:
        print("arg was broken into " + str(num) + " and " + unit)
 
+     # we shouldn't get here (because if we did,
+     # it would be all numbers, and that case is
+     # handled up at the top of this function),
+     # but if we somehow manage to get here,
+     # return num as bytes
      if unit is None:
        return num
 
      # just get the first letter of unit descriptor
-     unit_prefix = unit[0]
+     # lowercase the unit for multiplier lookup
+     unit_prefix = unit[0].lower()
 
      # map 
      multiplier={
