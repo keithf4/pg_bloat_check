@@ -571,7 +571,7 @@ def convert_to_bytes(val):
        return val
 
    # split numbers from unit descriptor
-   # we assume format is "####kb" or "#### MB" etc.
+   # we assume format is "####kb" or "####MB" etc.
    # we assume there are no spaces between number
    # and units
    match = re.search(r'^([0-9]+)([a-zA-Z]+)?',val)
