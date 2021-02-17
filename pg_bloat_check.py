@@ -567,8 +567,10 @@ def convert_to_bytes(val):
 
    # immediately return if val is a number
    # (i.e., no units were provided)
-   if val.isdigit():
+   if isinstance(val, int):
        return val
+   if isinstance(val, str) and val.isdigit():
+       return int(val)
 
    # split numbers from unit descriptor
    # we assume format is "####kb" or "####MB" etc.
