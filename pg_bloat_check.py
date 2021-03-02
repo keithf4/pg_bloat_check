@@ -6,7 +6,7 @@ import argparse, csv, json, psycopg2, re, sys
 from psycopg2 import extras
 from random import randint
 
-version = "2.6.4"
+version = "2.6.5"
 
 parser = argparse.ArgumentParser(description="Provide a bloat report for PostgreSQL tables and/or indexes. This script uses the pgstattuple contrib module which must be installed first. Note that the query to check for bloat can be extremely expensive on very large databases or those with many tables. The script stores the bloat stats in a table so they can be queried again as needed without having to re-run the entire scan. The table contains a timestamp columns to show when it was obtained.")
 args_general = parser.add_argument_group(title="General options")
@@ -19,7 +19,7 @@ args_general.add_argument('-N', '--exclude_schema', help="Comma separated list o
 args_general.add_argument('--noanalyze', action="store_true", help="To ensure accurate fillfactor statistics, an analyze if each object being scanned is done before the check for bloat. Set this to skip the analyze step and reduce overall runtime, however your bloat statistics may not be as accurate.")
 args_general.add_argument('--noscan', action="store_true", help="Set this option to have the script just read from the bloat statistics table without doing a scan of any tables again.")
 args_general.add_argument('-p', '--min_wasted_percentage', type=float, default=0.1, help="Minimum percentage of wasted space an object must have to be included in the report. Default and minimum value is 0.1 (DO NOT include percent sign in given value).")
-args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report. Only works for tables. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
+args_general.add_argument('-q', '--quick', action="store_true", help="Use the pgstattuple_approx() function instead of pgstattuple() for a quicker, but possibly less accurate bloat report on tables. Note that this does not work on indexes or TOAST tables and those objects will continue to be scanned with pgstattuple() and still be included in the results. Sets the 'approximate' column in the bloat statistics table to True. Note this only works in PostgreSQL 9.5+.")
 args_general.add_argument('-u', '--quiet', default=0, action="count", help="Suppress console output but still insert data into the bloat statistics table. This option can be set several times. Setting once will suppress all non-error console output if no bloat is found, but still output when it is found for given parameter settings. Setting it twice will suppress all console output, even if bloat is found.")
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before committing inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
 args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index. All other filters used during a standard bloat check scan can be used with this option so you only get commands to run for objects relevant to your desired bloat thresholds.")
@@ -274,11 +274,6 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         cur.execute(sql_index)
     conn.commit()
 
-    if args.quick:
-        approximate = True
-    else:
-        approximate = False
-
     for o in object_list_with_toast:
         if args.debug:
             print("begining of object list loop: " + str(o))
@@ -343,14 +338,17 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         cur.execute(sql, [o['nspname'], o['relname']])
         relpages = int(cur.fetchone()[0])
 
-        if args.quick:
+        if args.quick and (o['relkind'] == "r" or o['relkind'] == "m"):
+            # pgstattuple_approx() does not work against toast tables
+            approximate = True
             sql = "SELECT table_len, approx_tuple_count AS tuple_count, approx_tuple_len AS tuple_len, approx_tuple_percent AS tuple_percent, dead_tuple_count,  "
             sql += "dead_tuple_len, dead_tuple_percent, approx_free_space AS free_space, approx_free_percent AS free_percent FROM "
         else:
+            approximate = False
             sql = "SELECT table_len, tuple_count, tuple_len, tuple_percent, dead_tuple_count, dead_tuple_len, dead_tuple_percent, free_space, free_percent FROM "
         if args.pgstattuple_schema != None:
             sql += " \"" + args.pgstattuple_schema + "\"."
-        if args.quick:
+        if args.quick and (o['relkind'] == "r" or o['relkind'] == "m"):
             sql += "pgstattuple_approx(%s::regclass) "
             if args.tablename == None:
                 sql += " WHERE table_len > %s"
@@ -595,11 +593,6 @@ if __name__ == "__main__":
             print("--quick option requires pgstattuple version 1.3 or greater (PostgreSQL 9.5)")
             close_conn(conn)
             sys.exit(2)
-        if (args.mode == "indexes" or args.mode == "both"):
-            print("--quick option can only be used with --mode=tables")
-            close_conn(conn)
-            sys.exit(2)
-
 
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
@@ -702,9 +695,9 @@ if __name__ == "__main__":
                     print("Unexpected object type encountered in stats table. Please report this bug to author with value found: " + str(r['objecttype']))
                     sys.exit(2)
 
-                justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + str(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
+                justify_space = 100 - len(str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "(" + "{:.2f}".format(r['total_waste_percent']) + "%)" + r['total_wasted_size'] + " wasted")
 
-                output_line = str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + str(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted"
+                output_line = str(counter) + ". " + r['schemaname'] + "." + r['objectname'] + " (" + type_label + ") " + "."*justify_space + "(" + "{:.2f}".format(r['total_waste_percent']) + "%) " + r['total_wasted_size'] + " wasted"
 
                 if r['objecttype'] == 'toast_table':
                     toast_real_sql = """ SELECT n.nspname||'.'||c.relname 
@@ -712,7 +705,7 @@ if __name__ == "__main__":
                                          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                                          WHERE reltoastrelid = %s """
                     if args.debug:
-                        print( "toast_real_sql: " + str(cur.mogrify(sql, [r['oid']]) ) )
+                        print( "toast_real_sql: " + str(cur.mogrify(toast_real_sql, [r['oid']]) ) )
                     cur.execute(toast_real_sql, [r['oid']])
                     real_table = cur.fetchone()[0]
                     output_line = output_line + "\n      Real table: " + str(real_table)
@@ -727,12 +720,12 @@ if __name__ == "__main__":
                                     , ('objecttype', r['objecttype'])
                                     , ('size_bytes', int(r['size_bytes']))
                                     , ('live_tuple_count', int(r['live_tuple_count']))
-                                    , ('live_tuple_percent', str(r['live_tuple_percent'])+"%" )
+                                    , ('live_tuple_percent', "{:.2f}".format(r['live_tuple_percent'])+"%" )
                                     , ('dead_tuple_count', int(r['dead_tuple_count']))
                                     , ('dead_tuple_size_bytes', int(r['dead_tuple_size_bytes']))
-                                    , ('dead_tuple_percent', str(r['dead_tuple_percent'])+"%" ) 
+                                    , ('dead_tuple_percent', "{:.2f}".format(r['dead_tuple_percent'])+"%" )
                                     , ('free_space_bytes', int(r['free_space_bytes']))
-                                    , ('free_percent', str(r['free_percent'])+"%" ) 
+                                    , ('free_percent', "{:.2f}".format(r['free_percent'])+"%" )
                                     , ('approximate', r['approximate'])
                                    ])
                 result_list.append(result_dict)
