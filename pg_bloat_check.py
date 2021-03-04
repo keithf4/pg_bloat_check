@@ -24,10 +24,10 @@ args_general.add_argument('-u', '--quiet', default=0, action="count", help="Supp
 args_general.add_argument('-r', '--commit_rate', type=int, default=5, help="Sets how many tables are scanned before committing inserts into the bloat statistics table. Helps avoid long running transactions when scanning large tables. Default is 5. Set to 0 to avoid committing until all tables are scanned. NOTE: The bloat table is truncated on every run unless --noscan is set.")
 args_general.add_argument('--rebuild_index', action="store_true", help="Output a series of SQL commands for each index that will rebuild it with minimal impact on database locks. This does NOT run the given sql, it only provides the commands to do so manually. This does not run a new scan and will use the indexes contained in the statistics table from the last run. If a unique index was previously defined as a constraint, it will be recreated as a unique index. All other filters used during a standard bloat check scan can be used with this option so you only get commands to run for objects relevant to your desired bloat thresholds.")
 args_general.add_argument('--recovery_mode_norun', action="store_true", help="Setting this option will cause the script to check if the database it is running against is a replica (in recovery mode) and cause it to skip running. Otherwise if it is not in recovery, it will run as normal. This is useful for when you want to ensure the bloat check always runs only on the primary after failover without having to edit crontabs or similar process managers.")
-args_general.add_argument('-s', '--min_size', type=int, default=1, help="Minimum size in bytes of object to scan (table or index). Default and minimum value is 1.")
+args_general.add_argument('-s', '--min_size', default=1, help="Minimum size in bytes of object to scan (table or index). Default and minimum value is 1. Size units (mb, kb, tb, etc.) can be provided as well")
 args_general.add_argument('-t', '--tablename', help="Scan for bloat only on the given table. Must be schema qualified. This always gets both table and index bloat and overrides all other filter options so you always get the bloat statistics for the table no matter what they are.")
 args_general.add_argument('--version', action="store_true", help="Print version of this script.")
-args_general.add_argument('-z', '--min_wasted_size', type=int, default=1, help="Minimum size of wasted space in bytes. Default and minimum is 1.")
+args_general.add_argument('-z', '--min_wasted_size', default=1, help="Minimum size of wasted space in bytes. Default and minimum is 1. Size units (mb, kb, tb, etc.) can be provided as well")
 args_general.add_argument('--debug', action="store_true", help="Output additional debugging information. Overrides quiet option.")
 
 args_setup = parser.add_argument_group(title="Setup")
@@ -362,12 +362,12 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
         if args.tablename == None:
             if args.debug:
                 print("sql: " + str(cur.mogrify(sql, [ o['oid']
-                                                    , args.min_size
-                                                    , args.min_wasted_size
+                                                    , convert_to_bytes(args.min_size)
+                                                    , convert_to_bytes(args.min_wasted_size)
                                                     , args.min_wasted_percentage])) )
             cur.execute(sql, [ o['oid']
-                                , args.min_size
-                                , args.min_wasted_size
+                                , convert_to_bytes(args.min_size)
+                                , convert_to_bytes(args.min_wasted_size)
                                 , args.min_wasted_percentage ])
         else:
             if args.debug:
@@ -561,6 +561,70 @@ def rebuild_index(conn, index_list):
         print("")
 # end rebuild_index
 
+def convert_to_bytes(val):
+
+   # immediately return if val is a number
+   # (i.e., no units were provided)
+   if isinstance(val, int):
+       return val
+   if isinstance(val, str) and val.isdigit():
+       return int(val)
+
+   # split numbers from unit descriptor
+   # we assume format is "####kb" or "####MB" etc.
+   # we assume there are no spaces between number
+   # and units
+   match = re.search(r'^([0-9]+)([a-zA-Z]+)?',val)
+
+   if match:
+     num = int(match.group(1))
+     unit = match.group(2)
+
+     if args.debug:
+       print("arg was broken into " + str(num) + " and " + unit)
+
+     # we shouldn't get here (because if we did,
+     # it would be all numbers, and that case is
+     # handled up at the top of this function),
+     # but if we somehow manage to get here,
+     # return num as bytes
+     if unit is None:
+       return num
+
+     # just get the first letter of unit descriptor
+     # lowercase the unit for multiplier lookup
+     unit_prefix = unit[0].lower()
+
+     # map 
+     multiplier={
+              'b':0,
+              'k':1,
+              'm':2,
+              'g':3,
+              't':4,
+              'p':5,
+              'e':6,
+              'z':7
+              }
+      
+     # if the size descriptor cannot be interpreted, then ignore it
+     exponent = multiplier.get(unit_prefix,0)
+
+     if args.debug:
+       print("multiplier calculated: 1024 ** " + str(exponent))
+
+     return_bytes = num * (1024 ** exponent)
+
+     if args.debug:
+       print("calculated bytes: " + str(return_bytes))
+
+     return return_bytes
+
+   else:
+     # return val if we don't know what to do with it
+     return val
+# end convert_to_bytes
+
 
 if __name__ == "__main__":
     if args.version:
@@ -672,7 +736,7 @@ if __name__ == "__main__":
         sql += " WHERE (dead_tuple_size_bytes + (free_space_bytes - (relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) ) > %s "
         sql += " AND (dead_tuple_percent + (free_percent - (100-fillfactor))) > %s "
         sql += " ORDER BY (dead_tuple_size_bytes + (free_space_bytes - ((relpages - (fillfactor/100) * relpages ) * current_setting('block_size')::int ) )) DESC"
-        cur.execute(sql, [args.min_wasted_size, args.min_wasted_percentage])
+        cur.execute(sql, [convert_to_bytes(args.min_wasted_size), args.min_wasted_percentage])
         result = cur.fetchall()
 
         # Output rebuild commands instead of status report
