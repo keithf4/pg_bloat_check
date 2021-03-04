@@ -1,5 +1,9 @@
+2.7.0
+- Add support for simplified byte values to the filter options (b, kb, mb, gb, tb, pb, eb, zb). Thanks to @richyen on Github for the contribution (Github Issue #13 ,PR #21).
+
+
 2.6.5
-- Allow --quick mode to work now that TOAST tables are also being scanned as of version 2.6.1. pgstattuple_approx() does not work on TOAST tables. The --quick mode now only applies the pgstattuple_approx() function to the base table and performs a normal check on all remaining objects. This means that --quick mode now no longer requires table mode and always scans all objects. Thanks to @victor-sudakov on github for reporting the issue and suggestions on improvement.
+- Allow --quick mode to work now that TOAST tables are also being scanned as of version 2.6.1. pgstattuple_approx() does not work on TOAST tables. The --quick mode now only applies the pgstattuple_approx() function to the base table and performs a normal check on all remaining objects. This means that --quick mode now no longer requires table mode and always scans all objects. Thanks to @victor-sudakov on Github for reporting the issue and suggestions on improvement. (Github Issue #22)
 - Fix the output format for percentages to be at most 2 digit precision.
 - Fix "index out of range" error when running in --debug mode
 
