@@ -1,6 +1,6 @@
 # pg\_bloat\_check
 
-pg\_bloat\_check is a script to provide a bloat report for PostgreSQL tables and/or indexes. It requires at least Python 2.6 and the `pgstattuple` contrib module - https://www.postgresql.org/docs/current/static/pgstattuple.html
+pg\_bloat\_check is a script to provide a bloat report for PostgreSQL tables and/or indexes. It requires at least Python 2.6 (it is Python 3 compatible) and the `pgstattuple` contrib module - https://www.postgresql.org/docs/current/static/pgstattuple.html
 
 Note that using `pgstattuple` to check for bloat can be extremely expensive on very large databases or those with many tables. The script first requires running `--create_stats_table` to create a table for storing the bloat statistics. This makes it easier for reviewing the bloat statistics or running a regular monitoring interval without having to rescan the database again. The expense of this method of bloat checking means this script is not meant to be run often to provide any sort of real-time bloat monitoring. At most, it's recommended to run this once a week or once a month during off-peak hours to search for objects that need major maintenance. Continuous runnning of this script could cause performance issues since it can cause higher priority data in shared buffers to be flushed out if run too frequently.
 
