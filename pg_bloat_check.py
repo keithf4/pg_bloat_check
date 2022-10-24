@@ -198,7 +198,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     """ + sql_indexes
 
         if args.debug:
-            print("sql_class: " + cur.mogrify(sql_class, [args.tablename, args.tablename] ) )
+            print("sql_class: " + str(cur.mogrify(sql_class, [args.tablename, args.tablename])) )
         cur.execute(sql_class, [args.tablename, args.tablename] )
     else:
         # IN clauses work with python tuples. lists were converted by get_bloat() call
@@ -228,7 +228,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
             cur.execute(sql_class, (filter_list,filter_list))
         elif args.mode == "tables" or args.mode == "indexes":
             if args.debug:
-                print("sql_class: " + cur.mogrify(sql_class, (filter_list,) ))
+                print("sql_class: " + str(cur.mogrify(sql_class, (filter_list,) )) )
             cur.execute(sql_class, (filter_list,) )
         else:
             cur.execute(sql)
@@ -371,7 +371,7 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                                 , args.min_wasted_percentage ])
         else:
             if args.debug:
-                print("sql: " + cur.mogrify(sql, [ o['oid'] ]))
+                print("sql: " + str(cur.mogrify(sql, [ o['oid'] ])) )
             cur.execute(sql, [ o['oid'] ])
 
         stats = cur.fetchall()
