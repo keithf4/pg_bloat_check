@@ -1,3 +1,7 @@
+2.7.1
+- Fixed debug flag to work with additional flags (Github Issue #27)
+
+
 2.7.0
 - Add support for simplified byte values to the filter options (b, kb, mb, gb, tb, pb, eb, zb). Thanks to @richyen on Github for the contribution (Github Issue #13 ,PR #21).
 
