@@ -1,3 +1,8 @@
+2.7.2
+- Ignore spgist indexes. Thanks to @pdeaudney for the fix (Github PR #28)
+- Add example to show how to set connection options when running bloat check (Github PR #28)
+
+
 2.7.1
 - Fixed debug flag to work with additional flags (Github Issue #27)
 
