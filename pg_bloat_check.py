@@ -182,7 +182,9 @@ def get_bloat(conn, exclude_schema_list, include_schema_list, exclude_object_lis
                     JOIN pg_catalog.pg_am a ON c.relam = a.oid
                     WHERE c.relkind = 'i' 
                     AND c.relpersistence <> 't'
-                    AND a.amname <> 'gin' AND a.amname <> 'brin' """
+                    AND a.amname <> 'gin'
+                    AND a.amname <> 'brin'
+                    AND a.amname <> 'spgist' """
 
 
     cur.execute("SELECT current_setting('server_version_num')::int >= 90300")
