@@ -1,3 +1,8 @@
+2.8.0
+- Drop python 2 support
+- Change #! line to use python3 since several modern OS's no longer have a generic python binary/shortcut
+
+
 2.7.2
 - Ignore spgist indexes. Thanks to @pdeaudney for the fix (Github PR #28)
 - Add example to show how to set connection options when running bloat check (Github PR #28)
